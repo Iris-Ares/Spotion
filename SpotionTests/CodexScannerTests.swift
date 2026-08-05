@@ -28,7 +28,7 @@ import Testing
 
     private func firstRecord(home: URL) throws -> SessionRecord {
         let scanner = CodexScanner(codexHome: home)
-        let files = scanner.enumerateFiles()
+        let files = try #require(scanner.enumerateFiles())
         try #require(files.count == 1)
         let record = scanner.parse(files[0])
         return try #require(record)
@@ -90,7 +90,13 @@ import Testing
         try TestSupport.write("x", to: home.appendingPathComponent("sessions/2026/08/05/notes.txt"))
         try TestSupport.write("{}", to: home.appendingPathComponent("sessions/2026/08/05/other.jsonl"))
         let scanner = CodexScanner(codexHome: home)
-        #expect(scanner.enumerateFiles().count == 1)
+        #expect(scanner.enumerateFiles()?.count == 1)
+    }
+
+    @Test func missingRootIsLegitimatelyEmpty() throws {
+        let home = try TestSupport.makeTempDir()  // 无 sessions 子目录
+        let scanner = CodexScanner(codexHome: home)
+        #expect(scanner.enumerateFiles()?.isEmpty == true)
     }
 
     @Test func titleIndexLaterLineWins() throws {

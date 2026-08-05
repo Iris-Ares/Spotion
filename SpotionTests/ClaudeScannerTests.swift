@@ -39,7 +39,7 @@ import Testing
 
     private func firstRecord(home: URL) throws -> SessionRecord {
         let scanner = ClaudeScanner(claudeHome: home)
-        let files = scanner.enumerateFiles()
+        let files = try #require(scanner.enumerateFiles())
         try #require(files.count == 1)
         return try #require(scanner.parse(files[0]))
     }
@@ -120,7 +120,7 @@ import Testing
     @Test func noCwdReturnsNil() throws {
         let home = try makeHome(lines: [Self.queueOp])
         let scanner = ClaudeScanner(claudeHome: home)
-        let files = scanner.enumerateFiles()
+        let files = try #require(scanner.enumerateFiles())
         try #require(files.count == 1)
         #expect(scanner.parse(files[0]) == nil)
     }
@@ -131,6 +131,6 @@ import Testing
             Self.user("sub"),
             to: home.appendingPathComponent("projects/-tmp-proj/\(Self.uuid)/subagents/agent-1.jsonl"))
         let scanner = ClaudeScanner(claudeHome: home)
-        #expect(scanner.enumerateFiles().count == 1)
+        #expect(scanner.enumerateFiles()?.count == 1)
     }
 }

@@ -17,11 +17,16 @@ struct ClaudeScanner: SessionScanner {
         self.projectsRoot = claudeHome.appendingPathComponent("projects")
     }
 
-    func enumerateFiles() -> [ScannedFile] {
+    func enumerateFiles() -> [ScannedFile]? {
         let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: projectsRoot.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return []  // 根目录不存在：合法的空结果
+        }
         guard let dirs = try? fm.contentsOfDirectory(
             at: projectsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
-        ) else { return [] }
+        ) else { return nil }  // 列举失败：整体不可信，本轮不做删除
 
         var out: [ScannedFile] = []
         for dir in dirs {
@@ -30,7 +35,7 @@ struct ClaudeScanner: SessionScanner {
                 at: dir,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
                 options: [.skipsHiddenFiles]
-            ) else { continue }
+            ) else { return nil }  // 子目录列举失败同理：部分结果会被误判为删除
             for url in files where url.pathExtension == "jsonl" {
                 if let file = statted(url) { out.append(file) }
             }

@@ -91,15 +91,21 @@ actor SessionStore {
             .compactMap { $0 }
 
         for scanner in scanners {
+            // canonicalPath（realpath 语义）：FileManager 枚举返回的是符号链接解析后的
+            // 规范路径（如 /var → /private/var），根路径必须同样规范化，前缀匹配才成立。
+            // 注意不能用 resolvingSymlinksInPath()——它会反向剥掉 /private 前缀。
+            let rootPath = (try? URL(fileURLWithPath: scanner.rootPath)
+                .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath) ?? scanner.rootPath
             guard enabledAgents.contains(scanner.agent) else {
-                roots.append(RootState(path: scanner.rootPath, trustworthy: true, enabled: false))
+                roots.append(RootState(path: rootPath, trustworthy: true, enabled: false))
                 continue
             }
-            let files = scanner.enumerateFiles()
-            // 枚举突然为空但缓存里有该根下的条目 → 疑似瞬时失败（权限抖动等），本轮不做删除
-            let hadEntries = cache.entries.keys.contains { $0.hasPrefix(scanner.rootPath) }
-            let trustworthy = !files.isEmpty || !hadEntries
-            roots.append(RootState(path: scanner.rootPath, trustworthy: trustworthy, enabled: true))
+            // nil = 枚举失败（权限抖动等）→ 本轮不对该根做删除；[] = 真空目录，删除照常
+            guard let files = scanner.enumerateFiles() else {
+                roots.append(RootState(path: rootPath, trustworthy: false, enabled: true))
+                continue
+            }
+            roots.append(RootState(path: rootPath, trustworthy: true, enabled: true))
 
             for file in files {
                 seenPaths.insert(file.path)
@@ -124,9 +130,11 @@ actor SessionStore {
             if let record { changedIDs.insert(record.id) }
         }
 
-        // 删除处理：缓存条目的文件已消失（或所属 agent 被禁用）
+        // 删除处理：缓存条目的文件已消失（或所属 agent 被禁用）。
+        // 前缀带 "/" 边界，避免 …/sessions 误匹配 …/sessionsXYZ 兄弟目录。
         for path in cache.entries.keys where !seenPaths.contains(path) {
-            if let root = roots.first(where: { path.hasPrefix($0.path) }), root.enabled, !root.trustworthy {
+            if let root = roots.first(where: { path.hasPrefix($0.path + "/") }),
+               root.enabled, !root.trustworthy {
                 continue  // 疑似瞬时失败，保留
             }
             cache.entries.removeValue(forKey: path)
@@ -146,8 +154,11 @@ actor SessionStore {
         }
 
         let currentIDs = Set(records.keys)
+        // 变更 id 进入 dirty 集合，直到 markIndexed（donate 成功）才清除——失败自动重试
+        cache.dirtyIDs.formUnion(changedIDs)
+        cache.dirtyIDs.formIntersection(currentIDs)
         let diff = SessionDiff(
-            upserts: changedIDs.union(currentIDs.subtracting(cache.indexedIDs)).compactMap { records[$0] },
+            upserts: cache.dirtyIDs.union(currentIDs.subtracting(cache.indexedIDs)).compactMap { records[$0] },
             deletedIDs: Array(cache.indexedIDs.subtracting(currentIDs))
         )
 
@@ -161,10 +172,12 @@ actor SessionStore {
         return diff
     }
 
-    /// donate 成功后调用，更新已索引集合并落盘
+    /// donate 成功后调用，更新已索引集合、清除对应 dirty 标记并落盘
     func markIndexed(_ diff: SessionDiff) {
-        cache.indexedIDs.formUnion(diff.upserts.map(\.id))
+        let upsertedIDs = diff.upserts.map(\.id)
+        cache.indexedIDs.formUnion(upsertedIDs)
         cache.indexedIDs.subtract(diff.deletedIDs)
+        cache.dirtyIDs.subtract(upsertedIDs)
         persist()
     }
 

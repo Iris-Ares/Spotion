@@ -18,12 +18,24 @@ struct CodexScanner: SessionScanner {
         self.indexURL = codexHome.appendingPathComponent("session_index.jsonl")
     }
 
-    func enumerateFiles() -> [ScannedFile] {
+    func enumerateFiles() -> [ScannedFile]? {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return []  // 根目录不存在：合法的空结果
+        }
+
+        // 途中任何列举错误都视为整体不可信（nil），避免部分结果被当作"文件已删除"
+        nonisolated(unsafe) var failed = false
         guard let enumerator = FileManager.default.enumerator(
             at: sessionsRoot,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in
+                failed = true
+                return false
+            }
+        ) else { return nil }
 
         var out: [ScannedFile] = []
         for case let url as URL in enumerator {
@@ -31,7 +43,7 @@ struct CodexScanner: SessionScanner {
             guard name.hasPrefix("rollout-"), name.hasSuffix(".jsonl") else { continue }
             if let file = statted(url) { out.append(file) }
         }
-        return out
+        return failed ? nil : out
     }
 
     private struct Probe: Decodable { var type: String? }

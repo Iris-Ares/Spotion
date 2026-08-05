@@ -116,10 +116,13 @@ final class AppCoordinator {
         await enqueue {
             do {
                 try await self.indexer.deleteAll()
+                // 仅在 deleteAll 确认成功后才忘记已索引集合；
+                // 失败时保留 indexedIDs，删除跟踪不丢，本次降级为普通刷新
+                await self.store.forgetIndexed()
             } catch {
                 NSLog("Spotion: deleteAll failed: %@", error.localizedDescription)
+                self.uiState.lastError = error.localizedDescription
             }
-            await self.store.forgetIndexed()
             await self.performRefreshAndApply()
         }
     }
