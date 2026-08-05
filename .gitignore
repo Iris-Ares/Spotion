@@ -1,0 +1,11 @@
+# XcodeGen 生成物（source of truth 是 project.yml）
+Spotion.xcodeproj/
+
+# 构建产物
+build/
+DerivedData/
+
+# macOS / Xcode 杂项
+.DS_Store
+xcuserdata/
+*.xcuserstate
