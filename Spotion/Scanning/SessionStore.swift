@@ -35,6 +35,9 @@ actor SessionStore {
     /// id → record，从 cache.entries 重建
     private var records: [String: SessionRecord] = [:]
     private(set) var lastStats = StoreStats()
+    /// 磁盘上存在缓存文件但不可用（版本不匹配 / 解码失败）：旧 indexedIDs 已丢失，
+    /// 升级前删除的会话无从产生 deletedIDs——必须走一次 deleteAll + 全量重灌
+    private var pendingFullRebuild = false
 
     init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
         self.cacheURL = cacheURL
@@ -45,14 +48,22 @@ actor SessionStore {
     // MARK: - 生命周期
 
     func bootstrap() {
+        let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
               loaded.version == ScanCache.currentVersion else {
             cache = ScanCache()
+            pendingFullRebuild = fileExists
             return
         }
         cache = loaded
         rebuildRecords()
+    }
+
+    /// 读取并清除全量重建标记（bootstrap 后由 coordinator 消费一次）
+    func consumePendingFullRebuild() -> Bool {
+        defer { pendingFullRebuild = false }
+        return pendingFullRebuild
     }
 
     /// 从 entries 重建 id→record。codex resume/fork 会为同一 session_id 生成多个
@@ -137,7 +148,11 @@ actor SessionStore {
                root.enabled, !root.trustworthy {
                 continue  // 疑似瞬时失败，保留
             }
-            cache.entries.removeValue(forKey: path)
+            if let removed = cache.entries.removeValue(forKey: path)?.record {
+                // 被删的可能是同 session_id 的胜者文件：标记变更，
+                // 回退文件（若存在）会重新 donate 修正元数据；完全消失则走 deletedIDs
+                changedIDs.insert(removed.id)
+            }
         }
 
         // 统一从 entries 重建（处理同 session_id 多文件的胜者选择与删除回退）

@@ -219,8 +219,38 @@ import Testing
         try FileManager.default.removeItem(at: newURL)
         let d2 = await store.refresh(enabledAgents: [.codex])
         #expect(d2.deletedIDs.isEmpty)
+        // 胜者文件被删 → 回退文件必须重新 donate（修正 Spotlight 上的元数据）
+        #expect(d2.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
         record = try #require(await store.record(id: "codex:\(CodexScannerTests.uuid)"))
         #expect(record.filePath.hasSuffix(oldRel))
+        await store.markIndexed(d2)
+        let d3 = await store.refresh(enabledAgents: [.codex])
+        #expect(d3.isEmpty)
+    }
+
+    @Test func staleCacheFileTriggersFullRebuild() async throws {
+        // 缓存文件存在但版本过旧/损坏 → 旧 indexedIDs 已丢，必须请求 deleteAll+全量重灌
+        let env = try makeEnv()
+        try TestSupport.write(
+            "{\"version\":1,\"entries\":{},\"indexedIDs\":[\"codex:stale\"],\"codexTitles\":{}}",
+            to: env.cacheURL)
+        let store = makeStore(env)
+        await store.bootstrap()
+        #expect(await store.consumePendingFullRebuild() == true)
+        #expect(await store.consumePendingFullRebuild() == false)  // 只消费一次
+
+        // 全新环境（无缓存文件）不应触发重建
+        let freshEnv = try makeEnv()
+        let freshStore = makeStore(freshEnv)
+        await freshStore.bootstrap()
+        #expect(await freshStore.consumePendingFullRebuild() == false)
+
+        // 损坏（非 JSON）同样触发
+        let corruptEnv = try makeEnv()
+        try TestSupport.write("NOT JSON AT ALL", to: corruptEnv.cacheURL)
+        let corruptStore = makeStore(corruptEnv)
+        await corruptStore.bootstrap()
+        #expect(await corruptStore.consumePendingFullRebuild() == true)
     }
 
     @Test func disablingAgentRemovesItsRecords() async throws {

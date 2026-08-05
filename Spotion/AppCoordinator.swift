@@ -83,9 +83,13 @@ final class AppCoordinator {
             Task { @MainActor in await AppCoordinator.shared.refreshAndApply() }
         }
         Task {
-            // donate 路径从 indexAppEntities 迁移到 CSSearchableItem+associateAppEntity 后，
-            // 需一次全量重建以清掉旧路径写入的条目（同 id 原则上原地覆盖，保险起见重建）
-            if UserDefaults.standard.integer(forKey: "donationPathVersion") < 2 {
+            // 需要全量重建（deleteAll + 重灌）的两种情况：
+            // 1. donate 路径从 indexAppEntities 迁移到 CSSearchableItem+associateAppEntity
+            // 2. 缓存 schema 升版/损坏导致旧 indexedIDs 丢失——不 deleteAll 的话，
+            //    升级前已删除会话的 Spotlight 条目将永远无法清除
+            let needsDonationMigration = UserDefaults.standard.integer(forKey: "donationPathVersion") < 2
+            let cacheWasReset = await store.consumePendingFullRebuild()
+            if needsDonationMigration || cacheWasReset {
                 await fullReindex()
                 UserDefaults.standard.set(2, forKey: "donationPathVersion")
             } else {
