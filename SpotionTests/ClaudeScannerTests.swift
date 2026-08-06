@@ -41,7 +41,7 @@ import Testing
         let scanner = ClaudeScanner(claudeHome: home)
         let files = try #require(scanner.enumerateFiles())
         try #require(files.count == 1)
-        return try #require(scanner.parse(files[0]))
+        return try #require(scanner.parse(files[0]).record)
     }
 
     @Test func queueOperationFirstLineThenEnvelope() throws {
@@ -147,12 +147,15 @@ import Testing
         #expect(record.fallbackTitle == "tail title")
     }
 
-    @Test func noCwdReturnsNil() throws {
+    @Test func noCwdIsUnusableNotIOFailure() throws {
         let home = try makeHome(lines: [Self.queueOp])
         let scanner = ClaudeScanner(claudeHome: home)
         let files = try #require(scanner.enumerateFiles())
         try #require(files.count == 1)
-        #expect(scanner.parse(files[0]) == nil)
+        guard case .unusable = scanner.parse(files[0]) else {
+            Issue.record("expected .unusable for a transcript with no cwd")
+            return
+        }
     }
 
     @Test func subagentTranscriptsExcluded() throws {

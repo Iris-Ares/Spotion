@@ -347,6 +347,60 @@ import Testing
         #expect(await corruptStore.consumePendingFullRebuild() == true)
     }
 
+    @Test func transientReadFailureDoesNotEvict() async throws {
+        // The file changed and is then temporarily unreadable: the I/O failure
+        // must not be cached with the fresh mtime, or the session would be
+        // evicted and never re-parsed once access is restored
+        let env = try makeEnv()
+        try writeClaudeSession(env)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let d1 = await store.refresh(enabledAgents: both)
+        await store.markIndexed(d1)
+
+        let fileURL = env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl")
+        // Change the content, then make it unreadable
+        try TestSupport.write(
+            [ClaudeScannerTests.user("updated prompt"), ClaudeScannerTests.customTitle("新标题")]
+                .joined(separator: "\n") + "\n",
+            to: fileURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fileURL.path)
+
+        let d2 = await store.refresh(enabledAgents: both)
+        #expect(d2.deletedIDs.isEmpty)
+        #expect(await store.record(id: "claude:\(ClaudeScannerTests.uuid)") != nil)
+
+        // Access restored, file unchanged since: the stale cached mtime must
+        // trigger a re-parse that picks up the new content
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: fileURL.path)
+        let d3 = await store.refresh(enabledAgents: both)
+        #expect(d3.upserts.map(\.id) == ["claude:\(ClaudeScannerTests.uuid)"])
+        let record = try #require(await store.record(id: "claude:\(ClaudeScannerTests.uuid)"))
+        #expect(record.fallbackTitle == "新标题")
+    }
+
+    @Test func ghostDeletionsPersistUntilCleared() async throws {
+        // Queued ghost deletions must survive a restart and clear only when
+        // the deletion is confirmed
+        let env = try makeEnv()
+        try writeCodexSession(env)
+
+        let store1 = makeStore(env)
+        await store1.bootstrap()
+        _ = await store1.refresh(enabledAgents: both)
+        await store1.addPendingGhostDeletions(["codex:ghost-1", "codex:ghost-2"])
+
+        let store2 = makeStore(env)
+        await store2.bootstrap()
+        #expect(Set(await store2.pendingGhostDeletions()) == ["codex:ghost-1", "codex:ghost-2"])
+        await store2.clearGhostDeletions(["codex:ghost-1"])
+
+        let store3 = makeStore(env)
+        await store3.bootstrap()
+        #expect(await store3.pendingGhostDeletions() == ["codex:ghost-2"])
+    }
+
     @Test func disablingAgentRemovesItsRecords() async throws {
         let env = try makeEnv()
         try writeCodexSession(env)

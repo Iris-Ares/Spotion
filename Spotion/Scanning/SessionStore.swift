@@ -137,15 +137,21 @@ actor SessionStore {
         }
 
         // Parse changed files in parallel (pure value functions, I/O bound)
-        let parsed = await withTaskGroup(of: (ScannedFile, SessionRecord?).self) { group in
+        let parsed = await withTaskGroup(of: (ScannedFile, ParseOutcome).self) { group in
             for (scanner, file) in toParse {
                 group.addTask { (file, scanner.parse(file)) }
             }
-            var results: [(ScannedFile, SessionRecord?)] = []
+            var results: [(ScannedFile, ParseOutcome)] = []
             for await item in group { results.append(item) }
             return results
         }
-        for (file, record) in parsed {
+        for (file, outcome) in parsed {
+            // I/O failure: do NOT touch the cache entry. The kept entry's stale
+            // mtime/size guarantee a re-parse attempt on the next refresh once
+            // the file is readable again — caching nil here would evict the
+            // session and never retry (the new mtime would match forever).
+            if case .ioFailure = outcome { continue }
+            let record = outcome.record
             // If this path previously held a valid record and now parses to nil
             // (or to a different id), the old id must be marked changed: a
             // fallback rollout with the same id needs re-donation, and a fully
@@ -238,6 +244,28 @@ actor SessionStore {
         }
         persist()
         return unknown
+    }
+
+    // MARK: - Ghost deletions (items tracked by neither records nor indexedIDs)
+
+    /// Queue Spotlight items for deletion that have no local record and are
+    /// absent from indexedIDs — without persistence they would have no retry
+    /// path once the direct deletion fails.
+    func addPendingGhostDeletions(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        cache.pendingGhostDeletions.formUnion(ids)
+        persist()
+    }
+
+    func pendingGhostDeletions() -> [String] {
+        Array(cache.pendingGhostDeletions)
+    }
+
+    /// Called after the ghost deletion actually landed.
+    func clearGhostDeletions(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        cache.pendingGhostDeletions.subtract(ids)
+        persist()
     }
 
     /// Called after a successful donation: update the indexed set, clear the

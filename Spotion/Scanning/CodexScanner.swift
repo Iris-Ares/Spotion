@@ -74,24 +74,33 @@ struct CodexScanner: SessionScanner {
     /// expands on demand when a fixed window would truncate it.
     private static let maxHeadCap = 4 * 1024 * 1024
 
-    func parse(_ file: ScannedFile) -> SessionRecord? {
+    func parse(_ file: ScannedFile) -> ParseOutcome {
         var cap = 512 * 1024
         var best: SessionRecord?
         while true {
-            best = parse(file, headCap: cap)
+            switch parse(file, headCap: cap) {
+            case .ioFailure:
+                return .ioFailure
+            case .unusable:
+                best = nil
+            case .record(let record):
+                best = record
+            }
             // Keep expanding while either meta or firstPrompt is missing: a
             // giant injected line (response_item etc.) can push session_meta or
             // the first user_message past the current window. At the 4MB cap /
             // file end, accept what we have (no prompt → project-name title).
-            if let record = best, record.firstPrompt != nil { return record }
-            if Int64(cap) >= file.size || cap >= Self.maxHeadCap { return best }
+            if let record = best, record.firstPrompt != nil { return .record(record) }
+            if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
+                return best.map { .record($0) } ?? .unusable
+            }
             cap *= 2
         }
     }
 
-    private func parse(_ file: ScannedFile, headCap: Int) -> SessionRecord? {
+    private func parse(_ file: ScannedFile, headCap: Int) -> ParseOutcome {
         guard let lines = try? JSONLReader.headLines(of: URL(fileURLWithPath: file.path), cap: headCap) else {
-            return nil
+            return .ioFailure
         }
         let decoder = JSONDecoder()
         var meta: MetaLine.Payload?
@@ -114,12 +123,12 @@ struct CodexScanner: SessionScanner {
             if meta != nil, firstPrompt != nil { break }
         }
 
-        guard let meta else { return nil }
+        guard let meta else { return .unusable }
         let sessionID = meta.session_id ?? meta.id ?? Self.uuid(fromFilename: file.path) ?? ""
-        guard !sessionID.isEmpty else { return nil }
+        guard !sessionID.isEmpty else { return .unusable }
 
         let cwd = meta.cwd ?? FileManager.default.homeDirectoryForCurrentUser.path
-        return SessionRecord(
+        return .record(SessionRecord(
             id: SessionRecord.makeID(agent: .codex, sessionID: sessionID),
             agent: .codex,
             sessionID: sessionID,
@@ -132,7 +141,7 @@ struct CodexScanner: SessionScanner {
             lastActivityAt: file.mtime,
             filePath: file.path,
             fileSize: file.size
-        )
+        ))
     }
 
     /// rollout-2026-08-05T14-16-25-<uuid>.jsonl → last 36 characters of the stem.

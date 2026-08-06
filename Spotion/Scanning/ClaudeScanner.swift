@@ -101,25 +101,34 @@ struct ClaudeScanner: SessionScanner {
     /// unusable.
     private static let maxHeadCap = 4 * 1024 * 1024
 
-    func parse(_ file: ScannedFile) -> SessionRecord? {
+    func parse(_ file: ScannedFile) -> ParseOutcome {
         var cap = 256 * 1024
         var best: SessionRecord?
         while true {
-            best = parse(file, headCap: cap)
+            switch parse(file, headCap: cap) {
+            case .ioFailure:
+                return .ioFailure
+            case .unusable:
+                best = nil
+            case .record(let record):
+                best = record
+            }
             // Keep expanding while either cwd or firstPrompt is missing: an
             // early envelope can supply cwd while the first real prompt sits
             // past the window (filtered command/caveat records followed by a
             // large assistant record). At the 4MB cap / file end, accept what
             // we have (no prompt → tail-title / project-name fallback).
-            if let record = best, record.firstPrompt != nil { return record }
-            if Int64(cap) >= file.size || cap >= Self.maxHeadCap { return best }
+            if let record = best, record.firstPrompt != nil { return .record(record) }
+            if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
+                return best.map { .record($0) } ?? .unusable
+            }
             cap *= 2
         }
     }
 
-    private func parse(_ file: ScannedFile, headCap: Int) -> SessionRecord? {
+    private func parse(_ file: ScannedFile, headCap: Int) -> ParseOutcome {
         let url = URL(fileURLWithPath: file.path)
-        guard let head = try? JSONLReader.headLines(of: url, cap: headCap) else { return nil }
+        guard let head = try? JSONLReader.headLines(of: url, cap: headCap) else { return .ioFailure }
 
         let decoder = JSONDecoder()
         var cwd: String?
@@ -142,12 +151,12 @@ struct ClaudeScanner: SessionScanner {
 
         // Without a cwd the session cannot be resumed (`claude --resume` looks
         // sessions up by process cwd) — treat as unusable.
-        guard let cwd else { return nil }
+        guard let cwd else { return .unusable }
 
         let titles = Self.scanTailTitles(url: url, fileSize: file.size)
         let sessionID = ((file.path as NSString).lastPathComponent as NSString).deletingPathExtension
 
-        return SessionRecord(
+        return .record(SessionRecord(
             id: SessionRecord.makeID(agent: .claude, sessionID: sessionID),
             agent: .claude,
             sessionID: sessionID,
@@ -160,7 +169,7 @@ struct ClaudeScanner: SessionScanner {
             lastActivityAt: file.mtime,
             filePath: file.path,
             fileSize: file.size
-        )
+        ))
     }
 
     /// Excludes slash-command wrappers (<command-name>…) and the caveat notes

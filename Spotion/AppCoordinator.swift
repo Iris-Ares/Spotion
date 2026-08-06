@@ -192,13 +192,9 @@ final class AppCoordinator {
         await enqueue {
             await self.ensureReady()
             let ghosts = await self.store.markDirty(ids: ids)
-            if !ghosts.isEmpty {
-                do {
-                    try await self.indexer.delete(ids: ghosts)
-                } catch {
-                    NSLog("Spotion: ghost cleanup after late mutation failed: %@", error.localizedDescription)
-                }
-            }
+            // Ghosts resurrected by a late mutation get a durable deletion
+            // queue; performRefreshAndApply retries until they land.
+            await self.store.addPendingGhostDeletions(ghosts)
             await self.performRefreshAndApply()
         }
     }
@@ -241,6 +237,20 @@ final class AppCoordinator {
             NSLog("Spotion: index apply failed: %@", error.localizedDescription)
         }
 
+        // Ghost deletions (untracked Spotlight items queued by reindex requests
+        // or late zombie mutations) retry every cycle until they land. Their
+        // failure does not flip `applied` — they are orthogonal to the
+        // wipe+donate contract and have their own durable retry.
+        let ghosts = await store.pendingGhostDeletions()
+        if !ghosts.isEmpty {
+            do {
+                try await indexer.delete(ids: ghosts)
+                await store.clearGhostDeletions(ghosts)
+            } catch {
+                NSLog("Spotion: ghost deletion retry failed: %@", error.localizedDescription)
+            }
+        }
+
         let stats = await store.lastStats
         uiState.codexCount = stats.codexCount
         uiState.claudeCount = stats.claudeCount
@@ -266,13 +276,9 @@ final class AppCoordinator {
         await enqueue {
             await self.ensureReady()
             let unknown = await self.store.markDirty(ids: identifiers)
-            if !unknown.isEmpty {
-                do {
-                    try await self.indexer.delete(ids: unknown)
-                } catch {
-                    NSLog("Spotion: delete of unknown reindex ids failed: %@", error.localizedDescription)
-                }
-            }
+            // Unknown ids are tracked by neither records nor indexedIDs — queue
+            // them durably; performRefreshAndApply retries until they land.
+            await self.store.addPendingGhostDeletions(unknown)
             await self.performRefreshAndApply()
         }
     }

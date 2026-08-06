@@ -9,8 +9,8 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
-    /// v3: added dirtyIDs (donation-failure retry); v2: on-demand head expansion
-    static let currentVersion = 3
+    /// v4: added pendingGhostDeletions; v3: dirtyIDs; v2: head expansion
+    static let currentVersion = 4
 
     var version: Int = currentVersion
     /// key = absolute session file path
@@ -22,6 +22,10 @@ struct ScanCache: Codable, Sendable {
     /// cleared only in markIndexed, so a timed-out/failed upsert retries next
     /// cycle (an mtime cache hit no longer implies the id can be skipped)
     var dirtyIDs: Set<String> = []
+    /// Spotlight items that must be deleted but are tracked by neither records
+    /// nor indexedIDs (ghosts from system reindex requests or late zombie
+    /// mutations). Retried every refresh until the deletion lands.
+    var pendingGhostDeletions: Set<String> = []
     /// codex sessionID → thread_name (from ~/.codex/session_index.jsonl)
     var codexTitles: [String: String] = [:]
 }

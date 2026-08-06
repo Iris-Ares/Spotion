@@ -30,8 +30,7 @@ import Testing
         let scanner = CodexScanner(codexHome: home)
         let files = try #require(scanner.enumerateFiles())
         try #require(files.count == 1)
-        let record = scanner.parse(files[0])
-        return try #require(record)
+        return try #require(scanner.parse(files[0]).record)
     }
 
     @Test func parsesMetaAndFirstUserMessage() throws {
