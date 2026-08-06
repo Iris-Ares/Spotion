@@ -22,6 +22,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ares.spotion
         INFOPLIST_FILE: Spotion/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   # Hostless tests: compile the AppKit-free core sources directly, avoiding
   # LSUIElement test-host issues
   SpotionTests:
