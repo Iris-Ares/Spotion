@@ -4,6 +4,7 @@ Spotion.xcodeproj/
 # Build products
 build/
 DerivedData/
+dist/
 
 # macOS / Xcode misc
 .DS_Store

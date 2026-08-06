@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Job name doubles as the required status check context in
+  # .github/rulesets/protect-main.json — keep the two in sync.
+  build-test:
+    name: build-test
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Test
+        run: xcodebuild -project Spotion.xcodeproj -scheme Spotion -derivedDataPath build test
+
+      # The release pipeline ships Release — catch Release-only breakage here,
+      # not on a tag push.
+      - name: Build Release
+        run: xcodebuild -project Spotion.xcodeproj -scheme Spotion -configuration Release -derivedDataPath build build

@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
@@ -34,5 +34,13 @@
 	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Iris-Ares</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Iris-Ares/Spotion/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>rLghbZxiOZPBbNdaGLUPKy5Ckv1mmhZ9BevhnEaNHYI=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
 </dict>
 </plist>

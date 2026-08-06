@@ -9,6 +9,37 @@ Codex CLI / Claude Code sessions, right inside native macOS Spotlight (`⌘ + Sp
 
 No Raycast / Alfred required — the entry point is 100% native.
 
+## Install
+
+1. Download `Spotion-X.Y.Z.zip` from the [latest release](https://github.com/Iris-Ares/Spotion/releases/latest), unzip it.
+2. **Drag `Spotion.app` into `/Applications` before the first launch.** (Launching from the
+   Downloads folder triggers App Translocation, which also breaks in-app updating.)
+3. First launch is blocked by Gatekeeper — builds are not yet Developer-ID signed or
+   notarized (no paid Apple Developer membership). Open **System Settings → Privacy &
+   Security**, scroll to the *"Spotion.app" was blocked* notice, click **Open Anyway** and
+   confirm. On macOS 26 the old right-click → Open shortcut no longer bypasses this.
+   Terminal alternative:
+
+   ```bash
+   xattr -d com.apple.quarantine /Applications/Spotion.app
+   ```
+
+4. Cautious? Each release ships a `SHA256SUMS.txt` — verify with
+   `shasum -a 256 -c SHA256SUMS.txt` next to the downloaded ZIP.
+
+This friction is **first install only**: in-app updates installed by Sparkle are not
+quarantined and won't re-trigger Gatekeeper. One known limitation of ad-hoc signing: macOS
+may re-ask for the Terminal automation permission after an update, because it can't link
+the new build to the previous grant.
+
+## Updates
+
+Spotion checks GitHub Releases for updates once a day (toggle in Settings → General →
+软件更新) without interrupting you — a new version shows up as a row in the menu-bar
+dropdown with a one-click install (download / verify / relaunch handled by
+[Sparkle](https://sparkle-project.org), updates EdDSA-signed). Manual check: menu bar →
+*Check for Updates…*. Release process and rollback: [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Requirements
 
 - macOS 26 (Tahoe) or later
