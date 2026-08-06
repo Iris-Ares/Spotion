@@ -1,0 +1,46 @@
+name: Spotion
+options:
+  bundleIdPrefix: com.ares
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    ENABLE_HARDENED_RUNTIME: "NO"
+    GENERATE_INFOPLIST_FILE: "NO"
+    DEAD_CODE_STRIPPING: "YES"
+targets:
+  Spotion:
+    type: application
+    platform: macOS
+    sources: [Spotion]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ares.spotion
+        INFOPLIST_FILE: Spotion/Info.plist
+  # Hostless tests: compile the AppKit-free core sources directly, avoiding
+  # LSUIElement test-host issues
+  SpotionTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - SpotionTests
+      - Spotion/Models
+      - Spotion/Scanning
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ares.SpotionTests
+        GENERATE_INFOPLIST_FILE: "YES"
+schemes:
+  Spotion:
+    build:
+      targets:
+        Spotion: all
+    run:
+      config: Debug
+    test:
+      targets: [SpotionTests]
