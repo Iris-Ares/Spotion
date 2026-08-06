@@ -9,8 +9,8 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
-    /// v4: added pendingGhostDeletions; v3: dirtyIDs; v2: head expansion
-    static let currentVersion = 4
+    /// v5: iconSources; v4: pendingGhostDeletions; v3: dirtyIDs; v2: head expansion
+    static let currentVersion = 5
 
     var version: Int = currentVersion
     /// key = absolute session file path
@@ -28,4 +28,9 @@ struct ScanCache: Codable, Sendable {
     var pendingGhostDeletions: Set<String> = []
     /// codex sessionID → thread_name (from ~/.codex/session_index.jsonl)
     var codexTitles: [String: String] = [:]
+    /// AgentKind.rawValue → opaque fingerprint of the icon source last folded
+    /// into the dirty set (donated thumbnails embed the handler app's icon, so
+    /// installing/removing/replacing that app must re-donate every session of
+    /// the agent even though the session files are unchanged)
+    var iconSources: [String: String] = [:]
 }

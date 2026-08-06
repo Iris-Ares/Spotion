@@ -92,7 +92,16 @@ actor SessionStore {
 
     // MARK: - Incremental refresh
 
-    func refresh(enabledAgents: Set<AgentKind>) async -> SessionDiff {
+    /// iconSources: per-agent opaque fingerprint of the artwork donated with
+    /// that agent's items (the coordinator derives it from the resolved handler
+    /// app). A fingerprint differing from the cached one marks every session
+    /// of the agent dirty, so unchanged sessions re-donate their thumbnail
+    /// after the handler app is installed, removed, or replaced. Agents absent
+    /// from the map are not checked.
+    func refresh(
+        enabledAgents: Set<AgentKind>,
+        iconSources: [AgentKind: String] = [:]
+    ) async -> SessionDiff {
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
 
@@ -218,6 +227,18 @@ actor SessionStore {
                 if records[id] != nil { changedIDs.insert(id) }
             }
             cache.codexTitles = newTitles
+        }
+
+        // Icon-source drift: fold the whole agent into changedIDs, then update
+        // the stored fingerprint immediately — from here the re-donation
+        // obligation lives in dirtyIDs, which markIndexed alone clears, so a
+        // failed donation still retries even though the fingerprint matches.
+        for (agent, fingerprint) in iconSources
+        where cache.iconSources[agent.rawValue] != fingerprint {
+            cache.iconSources[agent.rawValue] = fingerprint
+            for record in records.values where record.agent == agent {
+                changedIDs.insert(record.id)
+            }
         }
 
         let currentIDs = Set(records.keys)
