@@ -15,6 +15,6 @@ Instead, use [GitHub's private vulnerability reporting](https://github.com/Iris-
 Things that are useful to know when assessing Spotion:
 
 - Spotion reads local files under `~/.codex` and `~/.claude` and donates session titles, first-prompt snippets, and working-directory paths to the **local** CoreSpotlight index. Nothing is sent off-device; Spotion makes no network requests.
-- Session **content** beyond the indexed metadata is never parsed or stored.
+- Parsing is nonetheless real attack surface: to extract that metadata, the scanners JSON-decode transcript lines inside bounded head/tail windows (`Spotion/Scanning/`), which transiently decodes message content that never gets indexed. Only the extracted metadata is **stored or donated**, but crashes or misbehavior triggered by malformed or adversarial transcript files are in scope.
 - Resuming a session executes the `codex` / `claude` CLI in a terminal with shell-quoted arguments (`Spotion/Launch/ShellQuoting.swift`). Quoting bugs that could smuggle shell metacharacters through session IDs, paths, or prompts are in scope and taken seriously.
 - Desktop-app launches hand a `codex://` / `claude://` URL to whatever app is registered for the scheme; session IDs are validated as canonical UUIDs before being embedded.
