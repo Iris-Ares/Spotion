@@ -29,12 +29,19 @@ struct SessionEntity: AppEntity, IndexedEntity {
     }
 
     var displayRepresentation: DisplayRepresentation {
-        DisplayRepresentation(
-            title: "\(title)",
-            subtitle: "\(agent.displayName) · \(projectName)",
-            image: .init(systemName: agent == .codex
+        // Same artwork as the Spotlight thumbnail (agent app icon → Spotion
+        // icon); the symbol is a last resort when no bitmap could be rendered.
+        let image: DisplayRepresentation.Image = if let png = AgentIconProvider.shared.thumbnailPNG(for: agent) {
+            .init(data: png)
+        } else {
+            .init(systemName: agent == .codex
                 ? "chevron.left.forwardslash.chevron.right"
                 : "asterisk.circle")
+        }
+        return DisplayRepresentation(
+            title: "\(title)",
+            subtitle: "\(agent.displayName) · \(projectName)",
+            image: image
         )
     }
 
@@ -52,6 +59,9 @@ struct SessionEntity: AppEntity, IndexedEntity {
         attributes.contentModificationDate = lastActivityAt
         // Grouped by agent domain, enabling bulk deletion when an agent is disabled
         attributes.domainIdentifier = "spotion.\(agent.rawValue)"
+        // Without a thumbnail Spotlight renders a blank placeholder; the
+        // provider guarantees meaningful artwork (agent app icon or Spotion's).
+        attributes.thumbnailData = AgentIconProvider.shared.thumbnailPNG(for: agent)
         return attributes
     }
 }

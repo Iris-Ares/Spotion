@@ -88,8 +88,10 @@ final class AppCoordinator {
         }
         Task {
             // Three situations require a full rebuild (deleteAll + re-donate):
-            // 1. The donation path migrated from indexAppEntities to
-            //    CSSearchableItem+associateAppEntity.
+            // 1. The donated content generation advanced (v2: indexAppEntities
+            //    → CSSearchableItem+associateAppEntity; v3: per-agent thumbnail
+            //    attributes) — an incremental refresh would never re-donate
+            //    unchanged sessions, leaving old items in the stale format.
             // 2. A cache schema bump / corruption lost the old indexedIDs —
             //    without a deleteAll, Spotlight items for sessions deleted
             //    before the upgrade could never be removed.
@@ -98,7 +100,7 @@ final class AppCoordinator {
             //    launches).
             let defaults = UserDefaults.standard
             var needsRebuild = defaults.bool(forKey: "needsFullRebuild")
-            if defaults.integer(forKey: "donationPathVersion") < 2 { needsRebuild = true }
+            if defaults.integer(forKey: "donationPathVersion") < 3 { needsRebuild = true }
             if await store.consumePendingFullRebuild() { needsRebuild = true }
 
             if needsRebuild {
@@ -165,7 +167,7 @@ final class AppCoordinator {
             let success = cleaned && applied
             if success {
                 UserDefaults.standard.set(false, forKey: "needsFullRebuild")
-                UserDefaults.standard.set(2, forKey: "donationPathVersion")
+                UserDefaults.standard.set(3, forKey: "donationPathVersion")
             }
             return success
         }
@@ -220,7 +222,14 @@ final class AppCoordinator {
         let started = Date()
         var applied = true
 
-        let diff = await store.refresh(enabledAgents: SpotionSettings.enabledAgents)
+        // Fingerprint each enabled agent's icon source so the store can force
+        // a re-donation of unchanged sessions when a handler app was
+        // installed, removed, or replaced since the last pass.
+        let enabled = SpotionSettings.enabledAgents
+        let iconSources = Dictionary(uniqueKeysWithValues: enabled.map {
+            ($0, AgentIconProvider.shared.sourceFingerprint(for: $0))
+        })
+        let diff = await store.refresh(enabledAgents: enabled, iconSources: iconSources)
         do {
             if !diff.upserts.isEmpty {
                 let titled = await store.titled(records: diff.upserts)
