@@ -59,6 +59,30 @@ import Testing
         #expect(d2.isEmpty)
     }
 
+    /// Claude desktop's claude://resume import rewrites the transcript in
+    /// place with the tail title records stripped — the previously parsed
+    /// title must survive the rewrite instead of degrading to the first
+    /// prompt.
+    @Test func claudeTitleSurvivesTitleStrippingRewrite() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env)  // carries custom title "Claude 标题"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let d1 = await store.refresh(enabledAgents: both)
+        await store.markIndexed(d1)
+
+        try TestSupport.write(
+            ClaudeScannerTests.user("rewritten by desktop import, no title records") + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+        let d2 = await store.refresh(enabledAgents: both)
+
+        let record = try #require(d2.upserts.first { $0.id == "claude:\(ClaudeScannerTests.uuid)" })
+        #expect(record.fallbackTitle == "Claude 标题")
+        let titled = await store.titled(records: [record])
+        #expect(titled.first?.title == "Claude 标题")
+    }
+
     @Test func deletionDetected() async throws {
         let env = try makeEnv()
         try writeCodexSession(env)

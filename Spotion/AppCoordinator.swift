@@ -301,12 +301,19 @@ final class AppCoordinator {
 
     // MARK: - Opening sessions
 
-    func openSession(id: String) async throws {
+    @discardableResult
+    func openSession(id: String) async throws -> LaunchDestination {
         await ensureReady()
         guard let record = await store.record(id: id) else {
             throw SpotionError.sessionNotFound(id)
         }
-        try await TerminalLauncher.shared.resume(record)
+        switch SpotionSettings.launchTarget(for: record.agent) {
+        case .cli:
+            try await TerminalLauncher.shared.resume(record)
+            return .terminal(SpotionSettings.terminal)
+        case .nativeApp:
+            return .nativeApp(appName: try await NativeAppLauncher.shared.resume(record))
+        }
     }
 
     // MARK: - Entity query support (AppIntents)

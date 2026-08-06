@@ -9,7 +9,10 @@ struct MenuBarView: View {
         } else {
             ForEach(state.recent, id: \.record.id) { item in
                 Button("\(item.title)") {
-                    Task { try? await AppCoordinator.shared.openSession(id: item.record.id) }
+                    Task {
+                        do { try await AppCoordinator.shared.openSession(id: item.record.id) }
+                        catch { AppCoordinator.shared.uiState.lastError = error.localizedDescription }
+                    }
                 }
             }
         }

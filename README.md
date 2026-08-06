@@ -2,7 +2,8 @@
 
 Codex CLI / Claude Code sessions, right inside native macOS Spotlight (`⌘ + Space`):
 
-- **Search & Open** — search past sessions by title, project name, or directory; press Enter to resume the session in a terminal with the correct working directory.
+- **Search & Open** — search past sessions by title, project name, or directory; press Enter to resume the session in a terminal with the correct working directory, or hand it off to the agent's desktop app (Claude / ChatGPT-Codex) via `claude://resume` / `codex://threads` deep links. Pick the target per agent in Settings → General → 打开方式 (CLI remains the default for both).
+  Claude desktop semantics: `claude://resume` *imports* the CLI transcript into a desktop-managed session with the app's own (initially generic) title — the sidebar shows it next to the original CLI entry, same content. The import also rewrites the local transcript in place (thinking blocks and title records stripped) — Spotion carries the previously indexed title forward when that happens, so the Spotlight row keeps its name. Both are Claude.app behaviors, outside Spotion's control. Codex opens the thread in place with no such side effects.
 - **Quick Create** — run the "New Codex Session" / "New Claude Session" actions inside Spotlight, type the prompt inline, and press Enter to launch a new session in a terminal (macOS 26 Spotlight Actions).
 - **Always fresh** — a menu-bar app watches `~/.codex` and `~/.claude` for session changes and keeps the Spotlight index in sync.
 
