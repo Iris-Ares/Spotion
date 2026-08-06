@@ -45,6 +45,17 @@ import Testing
         #expect(record.startedAt != nil)
     }
 
+    @Test func promptBeyondFirstWindowIsFoundByExpansion() throws {
+        // meta 在首个 512KB 窗口内、巨型 response_item 把首条 user_message 推出窗口：
+        // 扩窗必须继续，直到找到 prompt（而不是拿着 firstPrompt==nil 提前返回）
+        let hugeInjection = String(repeating: "B", count: 600_000)
+        let giantResponseItem =
+            "{\"timestamp\":\"t\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"\(hugeInjection)\"}]}}"
+        let home = try makeHome(sessionLines: [Self.meta(), giantResponseItem, Self.userMessage("深处的提示")])
+        let record = try firstRecord(home: home)
+        #expect(record.firstPrompt == "深处的提示")
+    }
+
     @Test func hugeMetaLineStillParses() throws {
         let padding = String(repeating: "A", count: 100_000)
         let home = try makeHome(sessionLines: [

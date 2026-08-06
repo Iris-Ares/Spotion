@@ -71,9 +71,14 @@ struct CodexScanner: SessionScanner {
 
     func parse(_ file: ScannedFile) -> SessionRecord? {
         var cap = 512 * 1024
+        var best: SessionRecord?
         while true {
-            if let record = parse(file, headCap: cap) { return record }
-            if Int64(cap) >= file.size || cap >= Self.maxHeadCap { return nil }
+            best = parse(file, headCap: cap)
+            // meta 与 firstPrompt 任一缺失都继续扩窗：巨型注入行（response_item 等）
+            // 可能把 session_meta 或首条 user_message 推到窗口之外。
+            // 到达 4MB 上限/文件末尾后接受现状（无 prompt 则回退项目名标题）。
+            if let record = best, record.firstPrompt != nil { return record }
+            if Int64(cap) >= file.size || cap >= Self.maxHeadCap { return best }
             cap *= 2
         }
     }

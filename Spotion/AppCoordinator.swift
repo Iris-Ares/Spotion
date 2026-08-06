@@ -94,7 +94,10 @@ final class AppCoordinator {
             if await store.consumePendingFullRebuild() { needsRebuild = true }
 
             if needsRebuild {
-                // 义务持久化与成功清除由 fullReindex 内部保证
+                // 提前持久化义务：store 的一次性重置标记已被消费，
+                // 若在入队执行前崩溃，不提前落盘就会丢失重试；
+                // 队内的 set→尝试→clear 生命周期由 fullReindex 保证
+                defaults.set(true, forKey: "needsFullRebuild")
                 await fullReindex()
             } else {
                 await refreshAndApply()
@@ -120,15 +123,17 @@ final class AppCoordinator {
         await enqueue { await self.performRefreshAndApply() }
     }
 
-    /// 全量重建自带跨启动重试：动手前把义务持久化到 UserDefaults，
+    /// 全量重建自带跨启动重试：把义务持久化到 UserDefaults，
     /// 只有 deleteAll 确认成功才清除并推进 donationPathVersion——
     /// 无论调用方是启动迁移、系统 reindex 委托、intent 还是 UI 按钮，
     /// 失败/崩溃都会在后续启动重试，而不是 ack 之后被遗忘。
+    /// 标记的 set→尝试→clear 全生命周期都在串行管道【内部】完成：
+    /// 并发触发排队执行时，后一次失败不会被前一次成功的 continuation 误清标记。
     /// 失败的当轮保留 indexedIDs（删除跟踪不丢），降级为普通刷新。
     @discardableResult
     func fullReindex() async -> Bool {
-        UserDefaults.standard.set(true, forKey: "needsFullRebuild")
-        let cleaned = await enqueue {
+        await enqueue {
+            UserDefaults.standard.set(true, forKey: "needsFullRebuild")
             var cleaned = false
             do {
                 try await self.indexer.deleteAll()
@@ -139,13 +144,12 @@ final class AppCoordinator {
                 self.uiState.lastError = error.localizedDescription
             }
             await self.performRefreshAndApply()
+            if cleaned {
+                UserDefaults.standard.set(false, forKey: "needsFullRebuild")
+                UserDefaults.standard.set(2, forKey: "donationPathVersion")
+            }
             return cleaned
         }
-        if cleaned {
-            UserDefaults.standard.set(false, forKey: "needsFullRebuild")
-            UserDefaults.standard.set(2, forKey: "donationPathVersion")
-        }
-        return cleaned
     }
 
     private func enqueue<T: Sendable>(_ work: @escaping @MainActor () async -> T) async -> T {
