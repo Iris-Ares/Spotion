@@ -50,7 +50,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         attributes.keywords = keywords
         attributes.contentCreationDate = startedAt
         attributes.contentModificationDate = lastActivityAt
-        // 按 agent 归域，支持批量删除（禁用某个 agent 时）
+        // Grouped by agent domain, enabling bulk deletion when an agent is disabled
         attributes.domainIdentifier = "spotion.\(agent.rawValue)"
         return attributes
     }

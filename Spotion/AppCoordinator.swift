@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import Observation
 
-/// 菜单栏 / 设置 / 首次运行界面共享的可观察状态。
+/// Observable state shared by the menu bar / settings / first-run UI.
 @MainActor
 @Observable
 final class UIState {
@@ -25,7 +25,8 @@ enum SpotionError: LocalizedError {
     }
 }
 
-/// 组装 store / indexer / watcher；App Intents 与 UI 的统一入口。
+/// Wires up store / indexer / watcher; the single entry point for App Intents
+/// and the UI.
 @MainActor
 final class AppCoordinator {
     static let shared = AppCoordinator()
@@ -39,8 +40,10 @@ final class AppCoordinator {
     private var watcher: FileWatcher?
     private var reconcileTimer: Timer?
     private var firstRunController: FirstRunWindowController?
-    /// 索引写操作（增量 refresh / 全量 reindex）的串行管道：
-    /// watcher、系统 reindex 委托、UI 按钮可能并发触发，donate 互相踩踏会留下中间态 indexedIDs。
+    /// Serial pipeline for index writes (incremental refresh / full reindex):
+    /// the watcher, the system reindex delegate, and UI buttons can fire
+    /// concurrently, and overlapping donations would leave indexedIDs in a
+    /// partially-updated state.
     private var pipeline: Task<Void, Never>?
 
     private init() {
@@ -54,7 +57,8 @@ final class AppCoordinator {
         )
     }
 
-    /// 幂等：缓存加载完成即可服务实体查询（intent 进程可能先于 UI 到达）。
+    /// Idempotent: entity queries can be served as soon as the cache is loaded
+    /// (an intent invocation may arrive before the UI does).
     func ensureReady() async {
         if readyTask == nil {
             readyTask = Task { await store.bootstrap() }
@@ -62,7 +66,7 @@ final class AppCoordinator {
         await readyTask?.value
     }
 
-    /// app 启动入口
+    /// App launch entry point.
     func start() {
         Task {
             let isFirstRun = await !store.hasCacheOnDisk
@@ -78,25 +82,30 @@ final class AppCoordinator {
 
         Task { await indexer.installDelegate(SpotionIndexDelegate()) }
         startWatcher()
-        // 每小时兜底对账（索引漂移保险）
+        // Hourly reconcile as a safety net against index drift.
         reconcileTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
             Task { @MainActor in await AppCoordinator.shared.refreshAndApply() }
         }
         Task {
-            // 需要全量重建（deleteAll + 重灌）的三种情况：
-            // 1. donate 路径从 indexAppEntities 迁移到 CSSearchableItem+associateAppEntity
-            // 2. 缓存 schema 升版/损坏导致旧 indexedIDs 丢失——不 deleteAll 的话，
-            //    升级前已删除会话的 Spotlight 条目将永远无法清除
-            // 3. 上次重建的 deleteAll 未确认成功（义务持久化在 UserDefaults，跨启动重试）
+            // Three situations require a full rebuild (deleteAll + re-donate):
+            // 1. The donation path migrated from indexAppEntities to
+            //    CSSearchableItem+associateAppEntity.
+            // 2. A cache schema bump / corruption lost the old indexedIDs —
+            //    without a deleteAll, Spotlight items for sessions deleted
+            //    before the upgrade could never be removed.
+            // 3. A previous rebuild's deleteAll was never confirmed (the
+            //    obligation is persisted in UserDefaults and retried across
+            //    launches).
             let defaults = UserDefaults.standard
             var needsRebuild = defaults.bool(forKey: "needsFullRebuild")
             if defaults.integer(forKey: "donationPathVersion") < 2 { needsRebuild = true }
             if await store.consumePendingFullRebuild() { needsRebuild = true }
 
             if needsRebuild {
-                // 提前持久化义务：store 的一次性重置标记已被消费，
-                // 若在入队执行前崩溃，不提前落盘就会丢失重试；
-                // 队内的 set→尝试→clear 生命周期由 fullReindex 保证
+                // Persist the obligation up front: the store's one-shot reset
+                // flag has already been consumed, so a crash before the queued
+                // run would otherwise lose the retry. The in-queue
+                // set→attempt→clear lifecycle is handled by fullReindex.
                 defaults.set(true, forKey: "needsFullRebuild")
                 await fullReindex()
             } else {
@@ -117,19 +126,23 @@ final class AppCoordinator {
         watcher?.start()
     }
 
-    // MARK: - 扫描 → donate（全部经串行管道）
+    // MARK: - Scan → donate (everything goes through the serial pipeline)
 
     func refreshAndApply() async {
         await enqueue { await self.performRefreshAndApply() }
     }
 
-    /// 全量重建自带跨启动重试：把义务持久化到 UserDefaults，
-    /// 只有 deleteAll 确认成功才清除并推进 donationPathVersion——
-    /// 无论调用方是启动迁移、系统 reindex 委托、intent 还是 UI 按钮，
-    /// 失败/崩溃都会在后续启动重试，而不是 ack 之后被遗忘。
-    /// 标记的 set→尝试→clear 全生命周期都在串行管道【内部】完成：
-    /// 并发触发排队执行时，后一次失败不会被前一次成功的 continuation 误清标记。
-    /// 失败的当轮保留 indexedIDs（删除跟踪不丢），降级为普通刷新。
+    /// Full rebuild with durable cross-launch retry: the obligation is
+    /// persisted in UserDefaults and cleared — advancing donationPathVersion —
+    /// only after deleteAll is confirmed. Whether the caller is the startup
+    /// migration, the system reindex delegate, an intent, or the UI button, a
+    /// failure or crash retries on subsequent launches instead of being
+    /// forgotten after the acknowledgement.
+    /// The marker's whole set→attempt→clear lifecycle runs INSIDE the serial
+    /// pipeline: with overlapping triggers queued up, a later failed rebuild
+    /// cannot have its obligation wiped by an earlier success's continuation.
+    /// On failure the cycle keeps indexedIDs (deletion tracking intact) and
+    /// degrades to a plain refresh.
     @discardableResult
     func fullReindex() async -> Bool {
         await enqueue {
@@ -199,8 +212,11 @@ final class AppCoordinator {
         }
     }
 
-    /// 系统点名重灌指定 id：已知的强制入 dirty 后刷新；本地已不存在的直接从索引删除。
-    /// 普通增量刷新对未变更文件不会产生 upsert，直接 ack 会让这些条目永远缺失。
+    /// The system asked to reindex specific ids: known ones are forced dirty
+    /// and refreshed; ones that no longer exist locally are deleted from the
+    /// index directly. A plain incremental refresh would produce no upserts
+    /// for unchanged files, and acknowledging after it would leave those
+    /// items missing forever.
     func reindexIdentifiers(_ identifiers: [String]) async {
         await enqueue {
             await self.ensureReady()
@@ -216,7 +232,8 @@ final class AppCoordinator {
         }
     }
 
-    /// 某个 agent 被禁用时按域清除其结果（refresh 的删除 diff 也会兜底）。
+    /// Clears a disabled agent's results by domain (the refresh deletion diff
+    /// also covers this as a fallback).
     func agentToggled() async {
         for agent in AgentKind.allCases where !SpotionSettings.enabledAgents.contains(agent) {
             try? await indexer.deleteDomain("spotion.\(agent.rawValue)")
@@ -224,7 +241,7 @@ final class AppCoordinator {
         await refreshAndApply()
     }
 
-    // MARK: - 打开会话
+    // MARK: - Opening sessions
 
     func openSession(id: String) async throws {
         await ensureReady()
@@ -234,7 +251,7 @@ final class AppCoordinator {
         try await TerminalLauncher.shared.resume(record)
     }
 
-    // MARK: - 实体查询支持（AppIntents）
+    // MARK: - Entity query support (AppIntents)
 
     func entities(for identifiers: [String]) async -> [SessionEntity] {
         await ensureReady()
@@ -277,7 +294,7 @@ final class AppCoordinator {
         await indexer.selfCheck(term: term)
     }
 
-    // MARK: - 首次运行
+    // MARK: - First run
 
     private func showFirstRun() {
         let controller = FirstRunWindowController()

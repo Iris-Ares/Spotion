@@ -2,10 +2,13 @@ import Foundation
 
 /// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
 ///
-/// 首行必为 session_meta（payload 可含几十 KB 的 base_instructions，head 上限 512KB）。
-/// 首个真实用户输入 = 首条 type=="event_msg" 且 payload.type=="user_message" 的 payload.message；
-/// response_item/role=="user" 是上下文注入，不可用作标题。
-/// 标题不在会话文件里，而在 ~/.codex/session_index.jsonl（{id, thread_name, updated_at}）。
+/// Line 1 is always session_meta (its payload can carry tens of KB of
+/// base_instructions, hence the expandable head window).
+/// The first real user input is the first event with type=="event_msg" and
+/// payload.type=="user_message" → payload.message; response_item records with
+/// role=="user" are context injection and must not be used for titles.
+/// Titles are not in the session file — they live in
+/// ~/.codex/session_index.jsonl ({id, thread_name, updated_at}).
 struct CodexScanner: SessionScanner {
     let agent: AgentKind = .codex
     let sessionsRoot: URL
@@ -22,10 +25,11 @@ struct CodexScanner: SessionScanner {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            return []  // 根目录不存在：合法的空结果
+            return []  // root missing: a legitimate empty result
         }
 
-        // 途中任何列举错误都视为整体不可信（nil），避免部分结果被当作"文件已删除"
+        // Any listing error mid-walk marks the whole result untrustworthy (nil),
+        // so partial results are never mistaken for deleted files.
         nonisolated(unsafe) var failed = false
         guard let enumerator = FileManager.default.enumerator(
             at: sessionsRoot,
@@ -66,7 +70,8 @@ struct CodexScanner: SessionScanner {
         var payload: Payload
     }
 
-    /// session_meta 行可含巨型 base_instructions；固定窗口截断时按需扩展。
+    /// The session_meta line can carry giant base_instructions; the window
+    /// expands on demand when a fixed window would truncate it.
     private static let maxHeadCap = 4 * 1024 * 1024
 
     func parse(_ file: ScannedFile) -> SessionRecord? {
@@ -74,9 +79,10 @@ struct CodexScanner: SessionScanner {
         var best: SessionRecord?
         while true {
             best = parse(file, headCap: cap)
-            // meta 与 firstPrompt 任一缺失都继续扩窗：巨型注入行（response_item 等）
-            // 可能把 session_meta 或首条 user_message 推到窗口之外。
-            // 到达 4MB 上限/文件末尾后接受现状（无 prompt 则回退项目名标题）。
+            // Keep expanding while either meta or firstPrompt is missing: a
+            // giant injected line (response_item etc.) can push session_meta or
+            // the first user_message past the current window. At the 4MB cap /
+            // file end, accept what we have (no prompt → project-name title).
             if let record = best, record.firstPrompt != nil { return record }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap { return best }
             cap *= 2
@@ -129,7 +135,7 @@ struct CodexScanner: SessionScanner {
         )
     }
 
-    /// rollout-2026-08-05T14-16-25-<uuid>.jsonl → 取末尾 36 字符
+    /// rollout-2026-08-05T14-16-25-<uuid>.jsonl → last 36 characters of the stem.
     static func uuid(fromFilename path: String) -> String? {
         let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         guard stem.count >= 36 else { return nil }
@@ -137,9 +143,12 @@ struct CodexScanner: SessionScanner {
         return candidate.contains("-") ? candidate : nil
     }
 
-    /// 56KB 量级的标题索引，后出现的行覆盖先出现的（同 id 多次更新）。
-    /// 返回 nil = 文件存在但读取失败（调用方应保留旧标题，本轮不做标题 diff）；
-    /// 返回 [:] = 索引文件不存在——标题被合法清除，diff 照常。
+    /// The ~56KB title index; later lines overwrite earlier ones (the same id
+    /// is updated repeatedly).
+    /// nil = the file exists but reading failed (the caller should keep its
+    /// cached titles and skip the title diff this cycle);
+    /// [:] = the index file does not exist — titles were legitimately cleared,
+    /// the diff proceeds.
     func loadTitleIndex() -> [String: String]? {
         struct Entry: Decodable {
             var id: String?

@@ -2,11 +2,15 @@ import Foundation
 
 /// ~/.claude/projects/<escaped-cwd>/<session-uuid>.jsonl
 ///
-/// 目录名转义不可逆，cwd 必须从记录 envelope 读取；首行可能是无 envelope 的 queue-operation。
-/// 子 agent 转录嵌套在 <uuid>/subagents/ 下，按"仅深度 2"枚举天然排除。
-/// 标题在文件尾部的紧凑记录里（会被反复重写，取各自最后一条）：
-///   custom-title > ai-title > last-prompt > 首条非 sidechain 用户消息。
-/// 官方声明该格式随版本变化 → 全部防御式解析。
+/// The directory-name escaping is lossy, so cwd must be read from record
+/// envelopes; the first line may be a queue-operation with no envelope.
+/// Subagent transcripts are nested under <uuid>/subagents/ and are excluded
+/// structurally by enumerating at depth 2 only.
+/// Titles live in compact records near the file tail (rewritten repeatedly,
+/// take the LAST occurrence of each):
+///   custom-title > ai-title > last-prompt > first non-sidechain user message.
+/// The format is officially documented as internal and version-unstable →
+/// every decode is defensive.
 struct ClaudeScanner: SessionScanner {
     let agent: AgentKind = .claude
     let projectsRoot: URL
@@ -22,11 +26,11 @@ struct ClaudeScanner: SessionScanner {
         var isDirectory: ObjCBool = false
         guard fm.fileExists(atPath: projectsRoot.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            return []  // 根目录不存在：合法的空结果
+            return []  // root missing: a legitimate empty result
         }
         guard let dirs = try? fm.contentsOfDirectory(
             at: projectsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
-        ) else { return nil }  // 列举失败：整体不可信，本轮不做删除
+        ) else { return nil }  // listing failed: untrustworthy, no deletions this cycle
 
         var out: [ScannedFile] = []
         for dir in dirs {
@@ -35,7 +39,7 @@ struct ClaudeScanner: SessionScanner {
                 at: dir,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
                 options: [.skipsHiddenFiles]
-            ) else { return nil }  // 子目录列举失败同理：部分结果会被误判为删除
+            ) else { return nil }  // subdirectory listing failed: partial results would read as deletions
             for url in files where url.pathExtension == "jsonl" {
                 if let file = statted(url) { out.append(file) }
             }
@@ -85,14 +89,16 @@ struct ClaudeScanner: SessionScanner {
         var timestamp: String?
         var isSidechain: Bool?
         var message: Message?
-        // 尾部紧凑标题记录
+        // compact title records near the tail
         var customTitle: String?
         var aiTitle: String?
         var lastPrompt: String?
     }
 
-    /// 头窗口按需扩展：首条含 cwd 的记录可能是一条数百 KB 的巨型粘贴内容行，
-    /// 固定窗口会把它当作不完整行丢弃，导致整个会话被误判为不可用。
+    /// Head window expands on demand: the first cwd-bearing record can be a
+    /// single pasted-content line hundreds of KB long, which a fixed window
+    /// would drop as an incomplete line, misclassifying the whole session as
+    /// unusable.
     private static let maxHeadCap = 4 * 1024 * 1024
 
     func parse(_ file: ScannedFile) -> SessionRecord? {
@@ -127,7 +133,8 @@ struct ClaudeScanner: SessionScanner {
             if cwd != nil, startedAt != nil, firstPrompt != nil { break }
         }
 
-        // 无 cwd 就无法 resume（claude --resume 按进程 cwd 查找会话），视为不可用
+        // Without a cwd the session cannot be resumed (`claude --resume` looks
+        // sessions up by process cwd) — treat as unusable.
         guard let cwd else { return nil }
 
         let titles = Self.scanTailTitles(url: url, fileSize: file.size)
@@ -149,15 +156,18 @@ struct ClaudeScanner: SessionScanner {
         )
     }
 
-    /// 排除斜杠命令包装（<command-name>…）与 Claude Code 注入的 caveat 说明
+    /// Excludes slash-command wrappers (<command-name>…) and the caveat notes
+    /// Claude Code injects.
     static func looksLikeRealPrompt(_ text: String) -> Bool {
         !text.hasPrefix("<") && !text.hasPrefix("Caveat:")
     }
 
-    /// 尾部 64KB 起步、倍增扩窗（上限 512KB）。
-    /// 只有找到 custom-title（最高优先级）才提前停止；仅有 ai-title / last-prompt 时
-    /// 继续扩窗——更早的位置可能藏着更高优先级的记录，过早返回会让窗口里的
-    /// last-prompt 抢走 custom/ai-title 的位置，违背标题优先级。
+    /// Tail scan starting at 64KB, doubling up to 512KB.
+    /// Only a custom-title (highest priority) short-circuits the expansion;
+    /// with just an ai-title / last-prompt in the window the scan keeps
+    /// widening — a higher-priority record may sit slightly earlier, and
+    /// returning early would let a window-local last-prompt beat it, violating
+    /// the title priority order.
     private static func scanTailTitles(url: URL, fileSize: Int64) -> (custom: String?, ai: String?, lastPrompt: String?) {
         let decoder = JSONDecoder()
         let maxCap = 512 * 1024

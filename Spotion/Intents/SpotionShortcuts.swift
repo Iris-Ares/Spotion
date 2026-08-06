@@ -1,6 +1,7 @@
 import AppIntents
 
-/// Shortcuts / Siri 短语（Spotlight 动作不依赖它，但顺手提供）。
+/// Shortcuts / Siri phrases (Spotlight actions do not depend on this, but it
+/// is cheap to provide).
 struct SpotionShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(

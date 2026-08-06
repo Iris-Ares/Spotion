@@ -1,7 +1,9 @@
 import Foundation
 
-/// 每次启动动作时现算（不缓存）：codex 随 ChatGPT.app 更新漂移，claude 随版本切换。
-/// 顺序：设置覆盖 → 已知安装位置 → 常见 bin 目录 → 登录 shell `command -v`。
+/// Resolved fresh on every launch action (never cached): the codex binary
+/// drifts with ChatGPT.app updates, and claude moves across version switches.
+/// Order: settings override → known install locations → common bin dirs →
+/// login-shell `command -v`.
 struct AgentBinaryResolver: Sendable {
     struct NotFoundError: LocalizedError {
         var agent: AgentKind

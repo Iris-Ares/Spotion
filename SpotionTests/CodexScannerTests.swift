@@ -46,8 +46,9 @@ import Testing
     }
 
     @Test func promptBeyondFirstWindowIsFoundByExpansion() throws {
-        // meta 在首个 512KB 窗口内、巨型 response_item 把首条 user_message 推出窗口：
-        // 扩窗必须继续，直到找到 prompt（而不是拿着 firstPrompt==nil 提前返回）
+        // meta fits the initial 512KB window, but a giant response_item pushes
+        // the first user_message past it: expansion must continue until the
+        // prompt is found (not return early with firstPrompt == nil)
         let hugeInjection = String(repeating: "B", count: 600_000)
         let giantResponseItem =
             "{\"timestamp\":\"t\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"\(hugeInjection)\"}]}}"
@@ -67,7 +68,8 @@ import Testing
     }
 
     @Test func metaBeyondInitialWindowTriggersExpansion() throws {
-        // meta 行 ~600KB，超出 512KB 初始窗口 → 扩窗后仍能解析
+        // A ~600KB meta line exceeds the 512KB initial window → still parses
+        // after expansion
         let padding = String(repeating: "B", count: 600_000)
         let home = try makeHome(sessionLines: [
             Self.meta(extra: ",\"base_instructions\":{\"text\":\"\(padding)\"}"),
@@ -105,7 +107,7 @@ import Testing
     }
 
     @Test func missingRootIsLegitimatelyEmpty() throws {
-        let home = try TestSupport.makeTempDir()  // 无 sessions 子目录
+        let home = try TestSupport.makeTempDir()  // no sessions subdirectory
         let scanner = CodexScanner(codexHome: home)
         #expect(scanner.enumerateFiles()?.isEmpty == true)
     }
@@ -123,10 +125,11 @@ import Testing
 
     @Test func titleIndexDistinguishesMissingFromUnreadable() throws {
         let home = try TestSupport.makeTempDir()
-        // 文件不存在：合法的空（标题被清除的语义）
+        // File missing: legitimately empty (titles-were-cleared semantics)
         #expect(CodexScanner(codexHome: home).loadTitleIndex()?.isEmpty == true)
 
-        // 文件存在但不可读：nil（I/O 失败，调用方须保留旧标题）
+        // File exists but is unreadable: nil (I/O failure — the caller must
+        // keep its cached titles)
         let indexURL = home.appendingPathComponent("session_index.jsonl")
         try TestSupport.write("{\"id\":\"x\",\"thread_name\":\"y\"}\n", to: indexURL)
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: indexURL.path)

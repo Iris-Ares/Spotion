@@ -1,8 +1,10 @@
 import Foundation
 
-/// 有界 JSONL 读取：会话文件可达 13MB 且被 live 追加，永不整读。
+/// Bounded JSONL reading: session files reach 13MB and are appended live —
+/// never read a whole file.
 enum JSONLReader {
-    /// 头部最多 `cap` 字节，按行切分；若命中上限则丢弃末尾的不完整行。
+    /// At most `cap` bytes from the head, split into lines; if the cap was hit,
+    /// the trailing incomplete line is dropped.
     static func headLines(of url: URL, cap: Int) throws -> [Data] {
         let fh = try FileHandle(forReadingFrom: url)
         defer { try? fh.close() }
@@ -10,7 +12,8 @@ enum JSONLReader {
         return split(data, dropLast: data.count == cap)
     }
 
-    /// 尾部最多 `cap` 字节；若非从文件头开始读，丢弃开头的（可能不完整的）第一行。
+    /// At most `cap` bytes from the tail; when the window does not start at the
+    /// beginning of the file, the first (potentially partial) line is dropped.
     static func tailLines(of url: URL, cap: Int) throws -> [Data] {
         let fh = try FileHandle(forReadingFrom: url)
         defer { try? fh.close() }
@@ -39,7 +42,8 @@ enum JSONLReader {
 }
 
 enum ISO8601 {
-    /// 会话文件里的时间戳形如 "2026-08-05T10:08:52.613Z"，偶有无小数秒的变体。
+    /// Timestamps in session files look like "2026-08-05T10:08:52.613Z", with
+    /// an occasional variant lacking fractional seconds.
     static func date(from string: String) -> Date? {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

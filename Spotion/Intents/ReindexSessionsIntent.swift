@@ -1,6 +1,7 @@
 import AppIntents
 
-/// Tahoe Spotlight 索引不稳时的手动保险：清空命名索引后全量重建。
+/// Manual safety valve for Tahoe's Spotlight indexing flakiness: wipe the named
+/// index and rebuild from scratch.
 struct ReindexSessionsIntent: AppIntent {
     static let title: LocalizedStringResource = "Reindex Agent Sessions"
     static let description = IntentDescription(

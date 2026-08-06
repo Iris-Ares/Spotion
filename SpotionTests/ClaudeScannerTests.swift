@@ -99,7 +99,8 @@ import Testing
     }
 
     @Test func tailExpansionFindsTitlesBeyondFirstWindow() throws {
-        // 标题记录在文件前部，其后 ~100KB 填充 → 64KB tail 窗口找不到，扩窗后命中
+        // Title records sit near the head with ~100KB of filler after them →
+        // the 64KB tail window misses them, expansion finds them
         var lines = [Self.user("prompt"), Self.customTitle("藏得深的标题")]
         for _ in 0..<50 { lines.append(Self.assistantFiller(2000)) }
         let home = try makeHome(lines: lines)
@@ -108,9 +109,10 @@ import Testing
     }
 
     @Test func headExpansionHandlesHugeFirstEnvelopeLine() throws {
-        // 首条含 cwd 的 user 记录是一条 ~300KB 的巨型行（粘贴内容），
-        // 且前面只有无 envelope 的 queue-operation → 需扩窗才能解析
-        let huge = String(repeating: "内容", count: 100_000)  // ~600KB UTF-8
+        // The first cwd-bearing user record is a giant pasted-content line,
+        // preceded only by an envelope-less queue-operation → parsing requires
+        // head-window expansion
+        let huge = String(repeating: "内容", count: 100_000)  // ~600KB of UTF-8
         let home = try makeHome(lines: [Self.queueOp, Self.user(huge), Self.customTitle("扩窗标题")])
         let record = try firstRecord(home: home)
         #expect(record.cwd == "/tmp/proj")
@@ -118,8 +120,9 @@ import Testing
     }
 
     @Test func tailExpansionPrefersHigherPriorityTitleDeeperInFile() throws {
-        // custom-title 在文件前部、last-prompt 在最尾部：
-        // 64KB 窗口只见 last-prompt，扩窗必须继续，最终以 custom-title 为准
+        // custom-title near the head, last-prompt at the very end: the 64KB
+        // window sees only the last-prompt, expansion must continue, and the
+        // custom-title wins in the end
         var lines = [Self.user("prompt"), Self.customTitle("更高优先级的标题")]
         for _ in 0..<50 { lines.append(Self.assistantFiller(2000)) }
         lines.append(Self.lastPrompt("尾部的低优先级提示"))

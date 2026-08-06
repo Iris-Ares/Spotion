@@ -1,6 +1,7 @@
 import AppIntents
 
-/// Spotlight 内联新建 Codex 会话：必填 prompt 出现在 parameterSummary（Spotlight 可见性硬条件）。
+/// Inline new-Codex-session action in Spotlight: the required prompt appears in
+/// parameterSummary (a hard requirement for Spotlight visibility).
 struct NewCodexSessionIntent: AppIntent {
     static let title: LocalizedStringResource = "New Codex Session"
     static let description = IntentDescription(

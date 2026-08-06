@@ -24,6 +24,7 @@ run: build
 clean:
 	rm -rf build Spotion.xcodeproj
 
-# Spotlight/App Intents 注册异常时的复位手段（只对 /Applications 拷贝做验证）
+# Reset hammer for Spotlight/App Intents registration issues (always verify
+# against the /Applications copy)
 reset-registration:
 	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Spotion.app

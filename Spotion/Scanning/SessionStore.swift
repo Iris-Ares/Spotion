@@ -19,24 +19,28 @@ struct ProjectInfo: Sendable, Hashable {
     var lastUsed: Date
 }
 
-/// record + 解析好的显示标题（codex 标题在 store 的 codexTitles 里，跨界传递时需一并解析）
+/// Record plus its resolved display title (codex titles live in the store's
+/// codexTitles map, so they must be resolved before crossing the actor boundary).
 struct TitledSession: Sendable, Hashable {
     var record: SessionRecord
     var title: String
 }
 
-/// 全部会话状态的唯一持有者：mtime+size 增量扫描、标题解析、与已 donate 集合的 diff。
+/// Single owner of all session state: mtime+size incremental scanning,
+/// title resolution, and diffing against the set of already-donated ids.
 actor SessionStore {
     private let cacheURL: URL
     private let codexScanner: CodexScanner?
     private let claudeScanner: ClaudeScanner?
 
     private var cache = ScanCache()
-    /// id → record，从 cache.entries 重建
+    /// id → record, rebuilt from cache.entries
     private var records: [String: SessionRecord] = [:]
     private(set) var lastStats = StoreStats()
-    /// 磁盘上存在缓存文件但不可用（版本不匹配 / 解码失败）：旧 indexedIDs 已丢失，
-    /// 升级前删除的会话无从产生 deletedIDs——必须走一次 deleteAll + 全量重灌
+    /// A cache file exists on disk but is unusable (version mismatch / decode
+    /// failure): the old indexedIDs are gone, so sessions deleted before the
+    /// upgrade can never produce deletedIDs — a deleteAll + full re-donation
+    /// is required.
     private var pendingFullRebuild = false
 
     init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
@@ -45,7 +49,7 @@ actor SessionStore {
         self.claudeScanner = claudeScanner
     }
 
-    // MARK: - 生命周期
+    // MARK: - Lifecycle
 
     func bootstrap() {
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
@@ -60,15 +64,17 @@ actor SessionStore {
         rebuildRecords()
     }
 
-    /// 读取并清除全量重建标记（bootstrap 后由 coordinator 消费一次）
+    /// Read and clear the full-rebuild flag (consumed once by the coordinator
+    /// after bootstrap).
     func consumePendingFullRebuild() -> Bool {
         defer { pendingFullRebuild = false }
         return pendingFullRebuild
     }
 
-    /// 从 entries 重建 id→record。codex resume/fork 会为同一 session_id 生成多个
-    /// rollout 文件——同 id 碰撞时保留 lastActivityAt 最新的文件（正确反映最近活动，
-    /// 且最新文件被删除时自动回退到旧文件）。
+    /// Rebuild id → record from entries. `codex resume`/`fork` create multiple
+    /// rollout files for the same session_id — on collision keep the file with
+    /// the newest lastActivityAt (reflects recent activity correctly, and
+    /// automatically falls back to the older file when the newest is deleted).
     private func rebuildRecords() {
         records = [:]
         for entry in cache.entries.values {
@@ -84,7 +90,7 @@ actor SessionStore {
         FileManager.default.fileExists(atPath: cacheURL.path)
     }
 
-    // MARK: - 增量刷新
+    // MARK: - Incremental refresh
 
     func refresh(enabledAgents: Set<AgentKind>) async -> SessionDiff {
         var changedIDs = Set<String>()
@@ -92,7 +98,7 @@ actor SessionStore {
 
         struct RootState {
             var path: String
-            var trustworthy: Bool  // 枚举结果可信（非疑似瞬时失败）
+            var trustworthy: Bool  // enumeration result is reliable (not a suspected transient failure)
             var enabled: Bool
         }
         var roots: [RootState] = []
@@ -102,16 +108,19 @@ actor SessionStore {
             .compactMap { $0 }
 
         for scanner in scanners {
-            // canonicalPath（realpath 语义）：FileManager 枚举返回的是符号链接解析后的
-            // 规范路径（如 /var → /private/var），根路径必须同样规范化，前缀匹配才成立。
-            // 注意不能用 resolvingSymlinksInPath()——它会反向剥掉 /private 前缀。
+            // canonicalPath (realpath semantics): FileManager enumeration returns
+            // symlink-resolved canonical paths (e.g. /var → /private/var), so the
+            // root must be canonicalized the same way for prefix matching to hold.
+            // Do NOT use resolvingSymlinksInPath() — it strips the /private prefix
+            // in the opposite direction.
             let rootPath = (try? URL(fileURLWithPath: scanner.rootPath)
                 .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath) ?? scanner.rootPath
             guard enabledAgents.contains(scanner.agent) else {
                 roots.append(RootState(path: rootPath, trustworthy: true, enabled: false))
                 continue
             }
-            // nil = 枚举失败（权限抖动等）→ 本轮不对该根做删除；[] = 真空目录，删除照常
+            // nil = enumeration failed (permission blip etc.) → no deletions for
+            // this root this cycle; [] = genuinely empty root, deletions proceed.
             guard let files = scanner.enumerateFiles() else {
                 roots.append(RootState(path: rootPath, trustworthy: false, enabled: true))
                 continue
@@ -127,7 +136,7 @@ actor SessionStore {
             }
         }
 
-        // 变更文件并行解析（纯值函数，IO 密集）
+        // Parse changed files in parallel (pure value functions, I/O bound)
         let parsed = await withTaskGroup(of: (ScannedFile, SessionRecord?).self) { group in
             for (scanner, file) in toParse {
                 group.addTask { (file, scanner.parse(file)) }
@@ -141,28 +150,35 @@ actor SessionStore {
             if let record { changedIDs.insert(record.id) }
         }
 
-        // 删除处理：缓存条目的文件已消失（或所属 agent 被禁用）。
-        // 前缀带 "/" 边界，避免 …/sessions 误匹配 …/sessionsXYZ 兄弟目录。
+        // Deletions: a cached entry's file vanished (or its agent was disabled).
+        // The prefix carries a "/" boundary so …/sessions cannot accidentally
+        // match a sibling like …/sessionsXYZ.
         for path in cache.entries.keys where !seenPaths.contains(path) {
             if let root = roots.first(where: { path.hasPrefix($0.path + "/") }),
                root.enabled, !root.trustworthy {
-                continue  // 疑似瞬时失败，保留
+                continue  // suspected transient failure — keep the entry
             }
             if let removed = cache.entries.removeValue(forKey: path)?.record {
-                // 被删的可能是同 session_id 的胜者文件：标记变更，
-                // 回退文件（若存在）会重新 donate 修正元数据；完全消失则走 deletedIDs
+                // The removed file may be the winning file of a duplicated
+                // session_id: mark the id changed so the fallback file (if any)
+                // is re-donated with corrected metadata; if the session is fully
+                // gone it flows into deletedIDs instead.
                 changedIDs.insert(removed.id)
             }
         }
 
-        // 统一从 entries 重建（处理同 session_id 多文件的胜者选择与删除回退）
+        // Rebuild uniformly from entries (handles winner selection among
+        // multiple files sharing a session_id, and deletion fallback).
         rebuildRecords()
 
-        // codex 标题索引：变化只触发重新 donate，不重读 rollout 文件。
-        // 双向比较——新增/改名之外，标题被清除或条目消失（旧有新无）同样要重灌，
-        // 否则 Spotlight 会一直挂着旧标题直到 rollout 文件本身变化。
-        // loadTitleIndex() 为 nil = 读取失败：保留现有标题，本轮跳过 diff，
-        // 避免把 I/O 抖动当成"全部标题被清除"而批量降级重灌。
+        // Codex title index: changes only trigger re-donation, never a rollout
+        // re-read. Compare both directions — besides new/renamed entries, a
+        // cleared title or a vanished entry (present before, absent now) must
+        // also re-donate, or Spotlight keeps the stale title until the rollout
+        // file itself changes.
+        // loadTitleIndex() == nil means the read failed: keep the cached titles
+        // and skip the diff this cycle, so an I/O blip is not mistaken for
+        // "all titles cleared" and a mass downgrade re-donation.
         if enabledAgents.contains(.codex), let codexScanner,
            let newTitles = codexScanner.loadTitleIndex() {
             var affected = Set<String>()
@@ -180,7 +196,8 @@ actor SessionStore {
         }
 
         let currentIDs = Set(records.keys)
-        // 变更 id 进入 dirty 集合，直到 markIndexed（donate 成功）才清除——失败自动重试
+        // Changed ids enter the dirty set and stay until markIndexed (donation
+        // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
         cache.dirtyIDs.formIntersection(currentIDs)
         let diff = SessionDiff(
@@ -198,8 +215,10 @@ actor SessionStore {
         return diff
     }
 
-    /// 系统（Core Spotlight delegate）点名重灌时调用：已知 id 强制入 dirty 集合，
-    /// 下一轮 refresh 必产生 upsert；返回本地已不存在的 id（调用方应直接从索引删除）。
+    /// Called when the system (Core Spotlight delegate) requests specific ids:
+    /// known ids are forced into the dirty set so the next refresh must upsert
+    /// them; returns the ids that no longer exist locally (the caller should
+    /// delete those from the index directly).
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
@@ -213,7 +232,8 @@ actor SessionStore {
         return unknown
     }
 
-    /// donate 成功后调用，更新已索引集合、清除对应 dirty 标记并落盘
+    /// Called after a successful donation: update the indexed set, clear the
+    /// corresponding dirty flags, and persist.
     func markIndexed(_ diff: SessionDiff) {
         let upsertedIDs = diff.upserts.map(\.id)
         cache.indexedIDs.formUnion(upsertedIDs)
@@ -222,13 +242,14 @@ actor SessionStore {
         persist()
     }
 
-    /// 全量 Reindex 前调用：清空已索引集合，下轮 refresh 会把所有会话报为 upserts
+    /// Called before a full reindex: clear the indexed set so the next refresh
+    /// reports every session as an upsert.
     func forgetIndexed() {
         cache.indexedIDs = []
         persist()
     }
 
-    // MARK: - 查询
+    // MARK: - Queries
 
     func record(id: String) -> SessionRecord? { records[id] }
 
@@ -257,7 +278,8 @@ actor SessionStore {
             .sorted { $0.lastUsed > $1.lastUsed }
     }
 
-    /// codex：session_index 标题 > 首 prompt > 项目名；claude：尾部标题记录 > 首 prompt > 项目名
+    /// codex: session_index title > first prompt > project name;
+    /// claude: tail title records > first prompt > project name.
     func displayTitle(for record: SessionRecord) -> String {
         let raw: String? = switch record.agent {
         case .codex: cache.codexTitles[record.sessionID] ?? record.firstPrompt
@@ -288,7 +310,7 @@ actor SessionStore {
         return lines.joined(separator: "\n")
     }
 
-    // MARK: - 持久化
+    // MARK: - Persistence
 
     private func persist() {
         do {

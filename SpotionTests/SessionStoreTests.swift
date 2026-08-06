@@ -128,7 +128,8 @@ import Testing
     }
 
     @Test func codexTitleRemovalTriggersReindex() async throws {
-        // 标题条目从 session_index.jsonl 消失 → 该会话必须重灌（否则 Spotlight 挂旧标题）
+        // A title entry vanished from session_index.jsonl → the session must be
+        // re-donated (otherwise Spotlight keeps the stale title)
         let env = try makeEnv()
         try writeCodexSession(env, title: "会被移除的标题")
 
@@ -141,11 +142,12 @@ import Testing
         let d2 = await store.refresh(enabledAgents: both)
         #expect(d2.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
         let record = try #require(await store.record(id: "codex:\(CodexScannerTests.uuid)"))
-        #expect(await store.displayTitle(for: record) == "codex prompt")  // 回退到首 prompt
+        #expect(await store.displayTitle(for: record) == "codex prompt")  // falls back to the first prompt
     }
 
     @Test func titleIndexReadFailurePreservesTitles() async throws {
-        // session_index.jsonl 暂时不可读 → 保留旧标题，不得当成"全部标题被清除"批量重灌
+        // session_index.jsonl temporarily unreadable → keep the old titles; must
+        // not be treated as "all titles cleared" with a mass re-donation
         let env = try makeEnv()
         try writeCodexSession(env, title: "原标题")
 
@@ -167,7 +169,8 @@ import Testing
     }
 
     @Test func markDirtyForcesUpsertAndReportsUnknown() async throws {
-        // 系统点名重灌：已知 id 强制产生 upsert（即使文件未变），未知 id 原样返回
+        // System-requested reindex: known ids force an upsert (even with
+        // unchanged files), unknown ids are returned as-is
         let env = try makeEnv()
         try writeCodexSession(env)
 
@@ -185,7 +188,8 @@ import Testing
     }
 
     @Test func emptyRootDeletesLastSession() async throws {
-        // 根目录被成功枚举但已无任何会话文件（[] 而非 nil）→ 最后一个会话必须从索引删除
+        // The root enumerates successfully but holds no session files ([] not
+        // nil) → the last session must be deleted from the index
         let env = try makeEnv()
         try writeClaudeSession(env)
 
@@ -201,7 +205,8 @@ import Testing
     }
 
     @Test func enumerationFailurePreservesEntries() async throws {
-        // 根目录不可读（枚举失败 nil）→ 保护性保留，不产生删除
+        // The root is unreadable (enumeration fails with nil) → protective
+        // retention, no deletions
         let env = try makeEnv()
         try writeClaudeSession(env)
 
@@ -222,7 +227,8 @@ import Testing
     }
 
     @Test func failedDonationRetriesChangedSession() async throws {
-        // 已索引会话内容变更 → donate 失败（不调 markIndexed）→ 下轮 refresh 仍须重报该 id
+        // Indexed session content changed → donation fails (markIndexed not
+        // called) → the next refresh must report the id again
         let env = try makeEnv()
         try writeCodexSession(env)
 
@@ -231,7 +237,7 @@ import Testing
         let d1 = await store.refresh(enabledAgents: both)
         await store.markIndexed(d1)
 
-        // 内容追加（mtime+size 变化）
+        // Append content (mtime+size change)
         let path = env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel)
         let handle = try FileHandle(forWritingTo: path)
         try handle.seekToEnd()
@@ -240,7 +246,7 @@ import Testing
 
         let d2 = await store.refresh(enabledAgents: both)
         #expect(d2.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
-        // 模拟 donate 失败：不调用 markIndexed
+        // Simulate a donation failure: skip markIndexed
 
         let d3 = await store.refresh(enabledAgents: both)
         #expect(d3.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
@@ -251,8 +257,9 @@ import Testing
     }
 
     @Test func duplicateSessionIDNewestFileWins() async throws {
-        // codex resume/fork 会为同一 session_id 生成多个 rollout 文件：新 mtime 者胜；
-        // 新文件删除后回退到旧文件而不是丢失会话
+        // codex resume/fork create multiple rollout files for the same
+        // session_id: the newest mtime wins; deleting the newest falls back to
+        // the older file instead of losing the session
         let env = try makeEnv()
         let oldRel = "sessions/2026/08/01/rollout-2026-08-01T10-00-00-\(CodexScannerTests.uuid).jsonl"
         let newRel = "sessions/2026/08/05/rollout-2026-08-05T10-00-00-\(CodexScannerTests.uuid).jsonl"
@@ -268,7 +275,8 @@ import Testing
         await store.bootstrap()
         let d1 = await store.refresh(enabledAgents: [.codex])
         #expect(d1.upserts.count == 1)
-        // 路径断言用后缀比较：/var 与 /private/var 是同一位置的符号链接两侧
+        // Path assertions compare suffixes: /var and /private/var are two
+        // symlink spellings of the same location
         var record = try #require(await store.record(id: "codex:\(CodexScannerTests.uuid)"))
         #expect(record.filePath.hasSuffix(newRel))
         await store.markIndexed(d1)
@@ -276,7 +284,8 @@ import Testing
         try FileManager.default.removeItem(at: newURL)
         let d2 = await store.refresh(enabledAgents: [.codex])
         #expect(d2.deletedIDs.isEmpty)
-        // 胜者文件被删 → 回退文件必须重新 donate（修正 Spotlight 上的元数据）
+        // Winner file deleted → the fallback file must be re-donated
+        // (corrects the metadata Spotlight holds)
         #expect(d2.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
         record = try #require(await store.record(id: "codex:\(CodexScannerTests.uuid)"))
         #expect(record.filePath.hasSuffix(oldRel))
@@ -286,7 +295,8 @@ import Testing
     }
 
     @Test func staleCacheFileTriggersFullRebuild() async throws {
-        // 缓存文件存在但版本过旧/损坏 → 旧 indexedIDs 已丢，必须请求 deleteAll+全量重灌
+        // A cache file exists but is outdated/corrupt → the old indexedIDs are
+        // gone, so a deleteAll + full re-donation must be requested
         let env = try makeEnv()
         try TestSupport.write(
             "{\"version\":1,\"entries\":{},\"indexedIDs\":[\"codex:stale\"],\"codexTitles\":{}}",
@@ -294,15 +304,15 @@ import Testing
         let store = makeStore(env)
         await store.bootstrap()
         #expect(await store.consumePendingFullRebuild() == true)
-        #expect(await store.consumePendingFullRebuild() == false)  // 只消费一次
+        #expect(await store.consumePendingFullRebuild() == false)  // consumed only once
 
-        // 全新环境（无缓存文件）不应触发重建
+        // A fresh environment (no cache file) must not trigger a rebuild
         let freshEnv = try makeEnv()
         let freshStore = makeStore(freshEnv)
         await freshStore.bootstrap()
         #expect(await freshStore.consumePendingFullRebuild() == false)
 
-        // 损坏（非 JSON）同样触发
+        // Corruption (non-JSON) triggers it as well
         let corruptEnv = try makeEnv()
         try TestSupport.write("NOT JSON AT ALL", to: corruptEnv.cacheURL)
         let corruptStore = makeStore(corruptEnv)

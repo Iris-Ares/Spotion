@@ -8,13 +8,15 @@ struct ScannedFile: Sendable, Hashable {
 
 protocol SessionScanner: Sendable {
     var agent: AgentKind { get }
-    /// 扫描根目录（用于删除 diff 时判断缓存条目归属）
+    /// Scan root (used to attribute cache entries during the deletion diff).
     var rootPath: String { get }
-    /// 仅 stat，不读内容。
-    /// 返回 nil = 枚举失败（权限抖动等）→ 调用方本轮不得对该根做删除；
-    /// 返回 [] = 根目录为空或不存在 → 合法结果，删除照常进行。
+    /// Stat only, no content reads.
+    /// nil = enumeration failed (permission blip etc.) → the caller must not
+    /// delete anything under this root this cycle;
+    /// [] = root empty or missing → a legitimate result, deletions proceed.
     func enumerateFiles() -> [ScannedFile]?
-    /// 有界读取解析；不可用返回 nil（记入失败计数，文件不变不重试）
+    /// Bounded-read parse; returns nil when unusable (counted as a failure,
+    /// not retried until the file changes).
     func parse(_ file: ScannedFile) -> SessionRecord?
 }
 

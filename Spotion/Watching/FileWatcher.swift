@@ -1,8 +1,9 @@
 import CoreServices
 import Foundation
 
-/// FSEventStream（FileEvents，latency 1s）+ 自有 2s 尾部去抖。
-/// 会话文件被 live 追加会产生事件风暴；去抖后触发的增量 refresh 只有 stat 成本，可承受。
+/// FSEventStream (FileEvents, latency 1s) plus our own 2s trailing debounce.
+/// Live-appended session files produce event storms; the debounced incremental
+/// refresh costs only a stat pass, which is affordable.
 final class FileWatcher: @unchecked Sendable {
     private let paths: [String]
     private let debounce: TimeInterval

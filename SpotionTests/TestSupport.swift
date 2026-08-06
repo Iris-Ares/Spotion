@@ -2,8 +2,9 @@ import Foundation
 
 enum TestSupport {
     static func makeTempDir() throws -> URL {
-        // resolvingSymlinksInPath：/var/folders → /private/var/folders，
-        // 与 FileManager 枚举返回的真实路径一致，路径断言不受符号链接干扰
+        // resolvingSymlinksInPath: /var/folders → /private/var/folders, matching
+        // the canonical paths FileManager enumeration returns, so path
+        // assertions are immune to symlink spelling differences
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("SpotionTests-\(UUID().uuidString)", isDirectory: true)
             .resolvingSymlinksInPath()

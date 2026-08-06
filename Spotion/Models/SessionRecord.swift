@@ -1,20 +1,21 @@
 import Foundation
 
 struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
-    /// Spotlight 稳定标识符："codex:<uuid>" / "claude:<uuid>"
+    /// Stable Spotlight identifier: "codex:<uuid>" / "claude:<uuid>"
     var id: String
     var agent: AgentKind
-    /// 传给 `codex resume` / `claude --resume` 的原始会话 id
+    /// Raw session id passed to `codex resume` / `claude --resume`
     var sessionID: String
-    /// claude：从文件尾部 title 记录解析出的标题；codex 恒为 nil（标题在 session_index.jsonl）
+    /// claude: title parsed from the tail title records; always nil for codex
+    /// (codex titles live in session_index.jsonl)
     var fallbackTitle: String?
-    /// 首个真实用户输入（截断 ~300 字符）
+    /// First real user input (truncated to ~300 characters)
     var firstPrompt: String?
     var cwd: String
     var projectName: String
     var gitBranch: String?
     var startedAt: Date?
-    /// 文件 mtime
+    /// File mtime
     var lastActivityAt: Date
     var filePath: String
     var fileSize: Int64
@@ -25,7 +26,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
 }
 
 extension String {
-    /// 压成单行、折叠空白、截断，用作 Spotlight 标题
+    /// Collapsed to a single line, whitespace-folded and truncated — used as
+    /// the Spotlight title.
     var titleSanitized: String {
         let collapsed = split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return String(collapsed.prefix(100))

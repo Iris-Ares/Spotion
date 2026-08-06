@@ -1,6 +1,7 @@
 import AppIntents
 
-/// Spotlight 会话结果的打开动作：在终端中以正确 cwd resume。
+/// Open action for Spotlight session results: resume in a terminal with the
+/// correct cwd.
 struct OpenSessionIntent: OpenIntent {
     static let title: LocalizedStringResource = "Open Agent Session"
     static let description = IntentDescription(

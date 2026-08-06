@@ -1,9 +1,12 @@
 import AppKit
 import Foundation
 
-/// 把"resume 会话 / 新建会话"翻译成终端里的一条 shell 命令并拉起终端。
-/// Terminal.app：NSAppleScript `do script`（默认，首次触发自动化授权）。
-/// Ghostty：`open -na Ghostty.app --args -e /bin/zsh -c <命令>`（argv 直传，无二次 shell 展开）。
+/// Translates "resume a session / start a new session" into one shell command
+/// and launches it in a terminal.
+/// Terminal.app: NSAppleScript `do script` (default; triggers the Automation
+/// consent prompt on first use).
+/// Ghostty: `open -na Ghostty.app --args -e /bin/zsh -c <command>` (argv passed
+/// through verbatim, no second shell expansion).
 final class TerminalLauncher: Sendable {
     static let shared = TerminalLauncher()
 
@@ -20,14 +23,15 @@ final class TerminalLauncher: Sendable {
         switch record.agent {
         case .codex:
             if let cwd = existingDirectory(record.cwd) {
-                // --cd 官方文档：优先于会话保存目录
+                // Official docs: --cd takes precedence over the saved session dir
                 command = "cd \(q(cwd)) && exec \(q(binary)) --cd \(q(cwd)) resume \(q(record.sessionID))"
             } else {
-                // 原目录已消失：交给 codex 自己的会话目录逻辑
+                // Original directory is gone: defer to codex's own saved-dir logic
                 command = "exec \(q(binary)) resume \(q(record.sessionID))"
             }
         case .claude:
-            // claude --resume 无 cwd 参数，且会话查找按进程 cwd 定位 → cd 是硬要求
+            // claude --resume has no cwd flag and session lookup is scoped to
+            // the process cwd → the cd is mandatory
             guard let cwd = existingDirectory(record.cwd) else {
                 throw LaunchError(message: "会话目录已不存在：\(record.cwd)（claude --resume 必须在原目录运行）")
             }
@@ -48,7 +52,7 @@ final class TerminalLauncher: Sendable {
         try await launch(shellCommand: command)
     }
 
-    // MARK: - 终端分发
+    // MARK: - Terminal dispatch
 
     private func launch(shellCommand: String) async throws {
         switch SpotionSettings.terminal {
@@ -88,7 +92,7 @@ final class TerminalLauncher: Sendable {
         try process.run()
     }
 
-    // MARK: - 辅助
+    // MARK: - Helpers
 
     private func existingDirectory(_ path: String) -> String? {
         var isDirectory: ObjCBool = false

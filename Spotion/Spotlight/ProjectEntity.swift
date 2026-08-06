@@ -1,11 +1,12 @@
 import AppIntents
 
-/// Quick Create 的可选 "Project" 参数：来自已知会话的去重 cwd，最近使用优先。
+/// The optional "Project" parameter for Quick Create: deduplicated cwds of
+/// known sessions, most recently used first.
 struct ProjectEntity: AppEntity {
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Project")
     static let defaultQuery = ProjectEntityQuery()
 
-    /// id = 绝对路径
+    /// id = absolute path
     var id: String
     var name: String
 

@@ -2,7 +2,8 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-/// LSUIElement app 唯一主动弹窗的场合：首次运行（无扫描缓存时）。
+/// The only occasion this LSUIElement app opens a window on its own: first run
+/// (no scan cache present).
 @MainActor
 final class FirstRunWindowController: NSWindowController {
     convenience init() {

@@ -12,7 +12,8 @@ enum TerminalApp: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// UserDefaults 门面。全部为无存储的静态计算属性，任意线程可用（UserDefaults 自身线程安全）。
+/// UserDefaults facade. All members are storage-free static computed
+/// properties, usable from any thread (UserDefaults itself is thread-safe).
 enum SpotionSettings {
     private static var d: UserDefaults { .standard }
 
@@ -41,7 +42,7 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "claudePathOverride") }
     }
 
-    /// Quick Create 未指定项目时的默认工作目录
+    /// Default working directory for Quick Create when no project is chosen
     static var defaultNewSessionDir: String {
         get { nonEmpty(d.string(forKey: "defaultNewSessionDir")) ?? NSHomeDirectory() }
         set { d.set(newValue, forKey: "defaultNewSessionDir") }

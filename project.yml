@@ -22,7 +22,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ares.spotion
         INFOPLIST_FILE: Spotion/Info.plist
-  # 无宿主测试：直接编译 AppKit-free 的核心源码，规避 LSUIElement 宿主问题
+  # Hostless tests: compile the AppKit-free core sources directly, avoiding
+  # LSUIElement test-host issues
   SpotionTests:
     type: bundle.unit-test
     platform: macOS

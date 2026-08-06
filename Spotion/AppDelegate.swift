@@ -7,8 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppCoordinator.shared.start()
     }
 
-    /// 旧式 Core Spotlight 点击路径的后备：Spotlight 结果未经 OpenIntent 而以
-    /// CSSearchableItemActionType user activity 送达时，从 userInfo 取回条目 id。
+    /// Fallback for the legacy Core Spotlight click path: when a Spotlight
+    /// result arrives as a CSSearchableItemActionType user activity instead of
+    /// going through OpenIntent, recover the item id from userInfo.
     func application(
         _ application: NSApplication,
         continue userActivity: NSUserActivity,
