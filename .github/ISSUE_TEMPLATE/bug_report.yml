@@ -51,10 +51,10 @@ body:
     id: selfcheck
     attributes:
       label: Index self-check result (for search issues)
-      description: "Settings → Index → self-check: does a direct index query find your term?"
+      description: "Settings → Index → self-check with a term distinctive to one of your sessions (the query is not scoped to Spotion's items, so generic terms can hit unrelated Spotlight content)"
       options:
         - Not applicable / didn't run
-        - Hits > 0 (index OK, Spotlight UI doesn't show it)
+        - Hits > 0 for a distinctive term (index OK, Spotlight UI doesn't show it)
         - 0 hits (donation never landed)
   - type: input
     id: macos

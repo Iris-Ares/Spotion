@@ -21,7 +21,7 @@ You run [Codex CLI](https://developers.openai.com/codex/cli) and [Claude Code](h
 
 ## Features
 
-- **Search every session** — by title, first prompt, project name, working directory, or git branch. Codex titles come from its own session index; Claude Code titles follow the same priority the CLI uses (custom title → AI title → last prompt → first message).
+- **Search every session** — by title, first prompt, project name, working directory, or git branch (branch is indexed for Claude Code sessions; the Codex scanner doesn't extract one yet). Codex titles come from its own session index; Claude Code titles follow the same priority the CLI uses (custom title → AI title → last prompt → first message).
 - **Resume with one keystroke** — <kbd>⏎</kbd> opens the session as `codex resume` / `claude --resume` in Terminal.app or [Ghostty](https://ghostty.org), after `cd`-ing to the session's original directory.
 - **Or hand off to the desktop app** — per agent, choose to open sessions in the Claude or ChatGPT (Codex) desktop apps instead, via `claude://` / `codex://` deep links.
 - **Quick Create from Spotlight** — run *New Codex Session* / *New Claude Session* actions right inside Spotlight (macOS 26 Spotlight Actions): type a prompt inline, optionally pick a recent project, hit <kbd>⏎</kbd>, and the session starts in your terminal.
@@ -111,7 +111,7 @@ All preferences live in *Settings…* (via the menu-bar icon):
 
 ## Troubleshooting
 
-**Sessions don't appear in Spotlight.** Run the self-check in *Settings → Index* (it queries the CoreSpotlight index directly, bypassing the Spotlight UI). Hits > 0 mean the index is fine and the problem is on the Spotlight side — check that Spotion is enabled in *System Settings → Spotlight*, or give the system indexer a moment. 0 hits mean the donation never landed — press *Rebuild Index*.
+**Sessions don't appear in Spotlight.** Run the self-check in *Settings → Index* (it queries CoreSpotlight directly, bypassing the Spotlight UI). The query is not scoped to Spotion's own items, so use a term distinctive to one of your sessions — an unusual word from its title, not something generic like "session". With a distinctive term, hits > 0 mean the donation landed and the problem is on the Spotlight side — check that Spotion is enabled in *System Settings → Spotlight*, or give the system indexer a moment. 0 hits mean the donation never landed — press *Rebuild Index*.
 
 **Enter opens nothing / an error dialog about the binary.** The agent CLI wasn't found in the usual places. Set the explicit path in *Settings → Advanced* (find yours with `command -v codex` / `command -v claude`).
 
