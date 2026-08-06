@@ -88,8 +88,10 @@ final class AppCoordinator {
         }
         Task {
             // Three situations require a full rebuild (deleteAll + re-donate):
-            // 1. The donation path migrated from indexAppEntities to
-            //    CSSearchableItem+associateAppEntity.
+            // 1. The donated content generation advanced (v2: indexAppEntities
+            //    → CSSearchableItem+associateAppEntity; v3: per-agent thumbnail
+            //    attributes) — an incremental refresh would never re-donate
+            //    unchanged sessions, leaving old items in the stale format.
             // 2. A cache schema bump / corruption lost the old indexedIDs —
             //    without a deleteAll, Spotlight items for sessions deleted
             //    before the upgrade could never be removed.
@@ -98,7 +100,7 @@ final class AppCoordinator {
             //    launches).
             let defaults = UserDefaults.standard
             var needsRebuild = defaults.bool(forKey: "needsFullRebuild")
-            if defaults.integer(forKey: "donationPathVersion") < 2 { needsRebuild = true }
+            if defaults.integer(forKey: "donationPathVersion") < 3 { needsRebuild = true }
             if await store.consumePendingFullRebuild() { needsRebuild = true }
 
             if needsRebuild {
@@ -165,7 +167,7 @@ final class AppCoordinator {
             let success = cleaned && applied
             if success {
                 UserDefaults.standard.set(false, forKey: "needsFullRebuild")
-                UserDefaults.standard.set(2, forKey: "donationPathVersion")
+                UserDefaults.standard.set(3, forKey: "donationPathVersion")
             }
             return success
         }
