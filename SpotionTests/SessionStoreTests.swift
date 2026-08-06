@@ -294,6 +294,33 @@ import Testing
         #expect(d3.isEmpty)
     }
 
+    @Test func corruptedWinnerFallsBackAndRedonates() async throws {
+        // The winning rollout of a duplicated session id changes and stops
+        // parsing → the old id must be marked changed so the fallback file is
+        // re-donated, instead of Spotlight keeping the dead file's metadata
+        let env = try makeEnv()
+        let oldRel = "sessions/2026/08/01/rollout-2026-08-01T10-00-00-\(CodexScannerTests.uuid).jsonl"
+        let newRel = "sessions/2026/08/05/rollout-2026-08-05T10-00-00-\(CodexScannerTests.uuid).jsonl"
+        let content = [CodexScannerTests.meta(), CodexScannerTests.userMessage("x")].joined(separator: "\n") + "\n"
+        let oldURL = try TestSupport.write(content, to: env.codexHome.appendingPathComponent(oldRel))
+        let newURL = try TestSupport.write(content, to: env.codexHome.appendingPathComponent(newRel))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -86_400)], ofItemAtPath: oldURL.path)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let d1 = await store.refresh(enabledAgents: [.codex])
+        await store.markIndexed(d1)
+
+        // Corrupt the winner (mtime+size change, now parses to nil)
+        try TestSupport.write("NOT JSON — corrupted rollout data", to: newURL)
+        let d2 = await store.refresh(enabledAgents: [.codex])
+        #expect(d2.deletedIDs.isEmpty)
+        #expect(d2.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        let record = try #require(await store.record(id: "codex:\(CodexScannerTests.uuid)"))
+        #expect(record.filePath.hasSuffix(oldRel))
+    }
+
     @Test func staleCacheFileTriggersFullRebuild() async throws {
         // A cache file exists but is outdated/corrupt → the old indexedIDs are
         // gone, so a deleteAll + full re-donation must be requested

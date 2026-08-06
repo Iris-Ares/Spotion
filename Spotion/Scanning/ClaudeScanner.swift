@@ -103,9 +103,16 @@ struct ClaudeScanner: SessionScanner {
 
     func parse(_ file: ScannedFile) -> SessionRecord? {
         var cap = 256 * 1024
+        var best: SessionRecord?
         while true {
-            if let record = parse(file, headCap: cap) { return record }
-            if Int64(cap) >= file.size || cap >= Self.maxHeadCap { return nil }
+            best = parse(file, headCap: cap)
+            // Keep expanding while either cwd or firstPrompt is missing: an
+            // early envelope can supply cwd while the first real prompt sits
+            // past the window (filtered command/caveat records followed by a
+            // large assistant record). At the 4MB cap / file end, accept what
+            // we have (no prompt → tail-title / project-name fallback).
+            if let record = best, record.firstPrompt != nil { return record }
+            if Int64(cap) >= file.size || cap >= Self.maxHeadCap { return best }
             cap *= 2
         }
     }

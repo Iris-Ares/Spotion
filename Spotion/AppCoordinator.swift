@@ -233,12 +233,19 @@ final class AppCoordinator {
     }
 
     /// Clears a disabled agent's results by domain (the refresh deletion diff
-    /// also covers this as a fallback).
+    /// also covers this as a fallback). The whole operation runs inside the
+    /// serial pipeline — with a detached deleteDomain, a quick disable→enable
+    /// could let the re-enable refresh run first (ids still marked indexed, no
+    /// upserts) and the late domain deletion would then remove those items
+    /// from Spotlight until a rebuild. Enabled-ness is also re-read inside the
+    /// queued work, so a toggle reverted before its turn becomes a no-op.
     func agentToggled() async {
-        for agent in AgentKind.allCases where !SpotionSettings.enabledAgents.contains(agent) {
-            try? await indexer.deleteDomain("spotion.\(agent.rawValue)")
+        await enqueue {
+            for agent in AgentKind.allCases where !SpotionSettings.enabledAgents.contains(agent) {
+                try? await self.indexer.deleteDomain("spotion.\(agent.rawValue)")
+            }
+            await self.performRefreshAndApply()
         }
-        await refreshAndApply()
     }
 
     // MARK: - Opening sessions

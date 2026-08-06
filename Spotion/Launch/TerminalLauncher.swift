@@ -42,7 +42,14 @@ final class TerminalLauncher: Sendable {
 
     func startNew(agent: AgentKind, prompt: String, cwd rawCwd: String) async throws {
         let binary = try resolver.resolve(agent)
-        let cwd = existingDirectory(rawCwd) ?? NSHomeDirectory()
+        // Expand "~" (the settings field may hold an unexpanded path) and
+        // reject missing directories instead of silently substituting $HOME —
+        // the intent dialog names the requested project, so a silent fallback
+        // would start the session somewhere the user did not ask for.
+        let expanded = (rawCwd as NSString).expandingTildeInPath
+        guard let cwd = existingDirectory(expanded) else {
+            throw LaunchError(message: "目录不存在：\(rawCwd)。请在 Spotlight 里选择有效的 Project，或到 Spotion 设置里修正默认目录。")
+        }
         let command = switch agent {
         case .codex:
             "cd \(q(cwd)) && exec \(q(binary)) --cd \(q(cwd)) \(q(prompt))"

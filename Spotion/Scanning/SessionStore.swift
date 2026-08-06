@@ -146,6 +146,14 @@ actor SessionStore {
             return results
         }
         for (file, record) in parsed {
+            // If this path previously held a valid record and now parses to nil
+            // (or to a different id), the old id must be marked changed: a
+            // fallback rollout with the same id needs re-donation, and a fully
+            // vanished session flows into deletedIDs. Without this, the id
+            // stays in indexedIDs and Spotlight keeps the dead file's metadata.
+            if let previous = cache.entries[file.path]?.record, previous.id != record?.id {
+                changedIDs.insert(previous.id)
+            }
             cache.entries[file.path] = ScanCacheEntry(mtime: file.mtime, size: file.size, record: record)
             if let record { changedIDs.insert(record.id) }
         }

@@ -131,6 +131,22 @@ import Testing
         #expect(record.fallbackTitle == "更高优先级的标题")
     }
 
+    @Test func promptBeyondFirstWindowIsFoundByExpansion() throws {
+        // An early envelope supplies cwd (a filtered command wrapper), then a
+        // giant assistant record pushes the first real prompt past the 256KB
+        // initial window: expansion must continue until the prompt is found
+        // instead of returning early with firstPrompt == nil
+        let home = try makeHome(lines: [
+            Self.user("<command-name>/clear</command-name>"),
+            Self.assistantFiller(300_000),
+            Self.user("prompt beyond the window"),
+            Self.customTitle("tail title"),
+        ])
+        let record = try firstRecord(home: home)
+        #expect(record.firstPrompt == "prompt beyond the window")
+        #expect(record.fallbackTitle == "tail title")
+    }
+
     @Test func noCwdReturnsNil() throws {
         let home = try makeHome(lines: [Self.queueOp])
         let scanner = ClaudeScanner(claudeHome: home)
