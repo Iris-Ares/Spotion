@@ -50,11 +50,15 @@ final class TerminalLauncher: Sendable {
         guard let cwd = existingDirectory(expanded) else {
             throw LaunchError(message: "目录不存在：\(rawCwd)。请在 Spotlight 里选择有效的 Project，或到 Spotion 设置里修正默认目录。")
         }
+        // "--" terminates option parsing (clap/commander convention): a prompt
+        // beginning with "-" must reach the CLI as the positional prompt, not
+        // be parsed as an option (e.g. "-p" would otherwise exit with a
+        // missing-profile-value error instead of starting a session).
         let command = switch agent {
         case .codex:
-            "cd \(q(cwd)) && exec \(q(binary)) --cd \(q(cwd)) \(q(prompt))"
+            "cd \(q(cwd)) && exec \(q(binary)) --cd \(q(cwd)) -- \(q(prompt))"
         case .claude:
-            "cd \(q(cwd)) && exec \(q(binary)) \(q(prompt))"
+            "cd \(q(cwd)) && exec \(q(binary)) -- \(q(prompt))"
         }
         try await launch(shellCommand: command)
     }

@@ -156,12 +156,28 @@ final class AppCoordinator {
                 NSLog("Spotion: deleteAll failed: %@", error.localizedDescription)
                 self.uiState.lastError = error.localizedDescription
             }
-            await self.performRefreshAndApply()
-            if cleaned {
+            // The rebuild succeeded only if the wipe AND the re-donation both
+            // landed — after a successful deleteAll with a failed apply, the
+            // index is empty-ish, so clearing the obligation (or reporting
+            // success) would be a lie. Keeping the marker set retries the
+            // whole rebuild next launch.
+            let applied = await self.performRefreshAndApply()
+            let success = cleaned && applied
+            if success {
                 UserDefaults.standard.set(false, forKey: "needsFullRebuild")
                 UserDefaults.standard.set(2, forKey: "donationPathVersion")
             }
-            return cleaned
+            return success
+        }
+    }
+
+    /// Compensation for a timed-out wipe (deleteAll/deleteDomain) whose XPC
+    /// completion later fired anyway: the zombie erased items indexedIDs still
+    /// claims exist, so forget the indexed set and re-donate everything.
+    func recoverFromLateWipe() async {
+        await enqueue {
+            await self.store.forgetIndexed()
+            await self.performRefreshAndApply()
         }
     }
 
@@ -175,11 +191,16 @@ final class AppCoordinator {
         return await task.value
     }
 
-    private func performRefreshAndApply() async {
+    /// Returns whether the donate/delete apply completed without error (the
+    /// scan itself is infallible; a false return means the diff was left for
+    /// the dirty/indexed retry mechanics).
+    @discardableResult
+    private func performRefreshAndApply() async -> Bool {
         await ensureReady()
         uiState.isScanning = true
         defer { uiState.isScanning = false }
         let started = Date()
+        var applied = true
 
         let diff = await store.refresh(enabledAgents: SpotionSettings.enabledAgents)
         do {
@@ -193,6 +214,7 @@ final class AppCoordinator {
             await store.markIndexed(diff)
             uiState.lastError = nil
         } catch {
+            applied = false
             uiState.lastError = error.localizedDescription
             NSLog("Spotion: index apply failed: %@", error.localizedDescription)
         }
@@ -210,6 +232,7 @@ final class AppCoordinator {
                 diff.upserts.count, diff.deletedIDs.count, Date().timeIntervalSince(started)
             )
         }
+        return applied
     }
 
     /// The system asked to reindex specific ids: known ones are forced dirty

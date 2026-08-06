@@ -19,7 +19,10 @@ struct AgentBinaryResolver: Sendable {
 
         let override = agent == .codex ? SpotionSettings.codexPathOverride : SpotionSettings.claudePathOverride
         if let override {
-            if isExecutable(override) { return override }
+            // The settings field may hold an unexpanded "~/..." path — expand
+            // before checking, or a valid override would be silently bypassed.
+            let expanded = (override as NSString).expandingTildeInPath
+            if isExecutable(expanded) { return expanded }
             tried.append(override)
         }
 

@@ -68,14 +68,31 @@ actor SpotlightIndexer {
         }
     }
 
+    /// Wipe operations get late-completion compensation: a timed-out deleteAll
+    /// cannot be cancelled, and if it completes later it silently erases items
+    /// that indexedIDs still claims exist — ordinary refreshes would never
+    /// restore them. When the zombie's success callback eventually fires, force
+    /// a forgetIndexed + full re-donation through the serial pipeline.
+    /// (Blocking the pipeline until the zombie finishes is not an option: the
+    /// original failure mode is an XPC call that never completes at all.)
+    /// Item-level upserts/deletes need no compensation — their late completion
+    /// performs exactly the mutation the retry logic is about to redo anyway.
     func deleteAll() async throws {
-        try await withTimeout(20, operation: "delete all") { done in
+        try await withTimeout(20, operation: "delete all", onLateCompletion: { error in
+            guard error == nil else { return }  // late failure: nothing was erased
+            NSLog("Spotion: timed-out deleteAll completed late — forcing full re-donation")
+            Task { @MainActor in await AppCoordinator.shared.recoverFromLateWipe() }
+        }) { done in
             self.index.deleteAllSearchableItems { done($0) }
         }
     }
 
     func deleteDomain(_ domainIdentifier: String) async throws {
-        try await withTimeout(20, operation: "delete domain") { done in
+        try await withTimeout(20, operation: "delete domain", onLateCompletion: { error in
+            guard error == nil else { return }
+            NSLog("Spotion: timed-out deleteDomain completed late — forcing full re-donation")
+            Task { @MainActor in await AppCoordinator.shared.recoverFromLateWipe() }
+        }) { done in
             self.index.deleteSearchableItems(withDomainIdentifiers: [domainIdentifier]) { done($0) }
         }
     }
@@ -103,40 +120,67 @@ actor SpotlightIndexer {
 
     // MARK: - Completion bridging with timeout
 
-    /// The completion may be consumed at most once; a callback arriving after
-    /// the timeout is ignored.
+    /// The continuation may be consumed at most once. The real callback and
+    /// the timeout race; when the timeout wins and the real callback arrives
+    /// later, `onLateCompletion` is invoked so wipe operations can compensate.
     private final class ResumeOnce: @unchecked Sendable {
         private let lock = NSLock()
         private var done = false
+        private var timedOut = false
         private let continuation: CheckedContinuation<Void, any Error>
+        private let onLateCompletion: (@Sendable ((any Error)?) -> Void)?
 
-        init(_ continuation: CheckedContinuation<Void, any Error>) {
+        init(
+            _ continuation: CheckedContinuation<Void, any Error>,
+            onLateCompletion: (@Sendable ((any Error)?) -> Void)?
+        ) {
             self.continuation = continuation
+            self.onLateCompletion = onLateCompletion
         }
 
-        func resume(_ error: (any Error)?) {
+        func resumeReal(_ error: (any Error)?) {
             lock.lock()
-            defer { lock.unlock() }
-            guard !done else { return }
+            if done {
+                // Only a genuine late arrival after a timeout notifies; a
+                // stray double-callback after a normal resume stays silent.
+                let notify = timedOut ? onLateCompletion : nil
+                lock.unlock()
+                notify?(error)
+                return
+            }
             done = true
+            lock.unlock()
             if let error {
                 continuation.resume(throwing: error)
             } else {
                 continuation.resume()
             }
         }
+
+        func resumeTimeout(_ error: any Error) {
+            lock.lock()
+            if done {
+                lock.unlock()
+                return
+            }
+            done = true
+            timedOut = true
+            lock.unlock()
+            continuation.resume(throwing: error)
+        }
     }
 
     private func withTimeout(
         _ seconds: TimeInterval,
         operation: String,
+        onLateCompletion: (@Sendable ((any Error)?) -> Void)? = nil,
         _ body: @escaping @Sendable (@escaping @Sendable ((any Error)?) -> Void) -> Void
     ) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            let once = ResumeOnce(continuation)
-            body { error in once.resume(error) }
+            let once = ResumeOnce(continuation, onLateCompletion: onLateCompletion)
+            body { error in once.resumeReal(error) }
             DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
-                once.resume(TimeoutError(operation: operation))
+                once.resumeTimeout(TimeoutError(operation: operation))
             }
         }
     }
