@@ -181,6 +181,28 @@ final class AppCoordinator {
         }
     }
 
+    /// Compensation for a timed-out item-level mutation (upsert/delete) whose
+    /// XPC completion later fired anyway. The zombie may have resurrected
+    /// items for sessions deleted in the meantime (an upsert landing after the
+    /// cleanup) or erased items for sessions that reappeared (a delete landing
+    /// after a re-donation). markDirty splits the batch: known ids re-donate
+    /// fresh content on top of whatever the zombie wrote; unknown ids are
+    /// ghosts and get deleted from the index.
+    func reconcileLateItemMutation(ids: [String]) async {
+        await enqueue {
+            await self.ensureReady()
+            let ghosts = await self.store.markDirty(ids: ids)
+            if !ghosts.isEmpty {
+                do {
+                    try await self.indexer.delete(ids: ghosts)
+                } catch {
+                    NSLog("Spotion: ghost cleanup after late mutation failed: %@", error.localizedDescription)
+                }
+            }
+            await self.performRefreshAndApply()
+        }
+    }
+
     private func enqueue<T: Sendable>(_ work: @escaping @MainActor () async -> T) async -> T {
         let previous = pipeline
         let task = Task { @MainActor () -> T in

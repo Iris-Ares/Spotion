@@ -54,7 +54,19 @@ actor SpotlightIndexer {
                     attributeSet: attributes
                 )
             })
-            try await withTimeout(20, operation: "index \(batch.items.count) items") { done in
+            // Late-completion hazard is symmetric for item-level mutations: a
+            // timed-out upsert can land after the session was deleted and the
+            // index cleaned, resurrecting an untracked ghost item; a timed-out
+            // delete can land after the session reappeared and was re-donated,
+            // erasing a tracked item. Both reconcile through the coordinator:
+            // ids still known are marked dirty (fresh content re-donated on
+            // top), ids unknown are deleted from the index.
+            let batchIDs = batch.items.map(\.uniqueIdentifier)
+            try await withTimeout(20, operation: "index \(batch.items.count) items", onLateCompletion: { error in
+                guard error == nil else { return }
+                NSLog("Spotion: timed-out upsert completed late — reconciling %d ids", batchIDs.count)
+                Task { @MainActor in await AppCoordinator.shared.reconcileLateItemMutation(ids: batchIDs) }
+            }) { done in
                 self.index.indexSearchableItems(batch.items) { done($0) }
             }
             start = end
@@ -63,7 +75,11 @@ actor SpotlightIndexer {
 
     func delete(ids: [String]) async throws {
         guard !ids.isEmpty else { return }
-        try await withTimeout(20, operation: "delete \(ids.count) items") { done in
+        try await withTimeout(20, operation: "delete \(ids.count) items", onLateCompletion: { error in
+            guard error == nil else { return }
+            NSLog("Spotion: timed-out delete completed late — reconciling %d ids", ids.count)
+            Task { @MainActor in await AppCoordinator.shared.reconcileLateItemMutation(ids: ids) }
+        }) { done in
             self.index.deleteSearchableItems(withIdentifiers: ids) { done($0) }
         }
     }
