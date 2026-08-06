@@ -158,10 +158,19 @@ actor SessionStore {
         // 统一从 entries 重建（处理同 session_id 多文件的胜者选择与删除回退）
         rebuildRecords()
 
-        // codex 标题索引：变化只触发重新 donate，不重读 rollout 文件
+        // codex 标题索引：变化只触发重新 donate，不重读 rollout 文件。
+        // 双向比较——新增/改名之外，标题被清除或条目消失（旧有新无）同样要重灌，
+        // 否则 Spotlight 会一直挂着旧标题直到 rollout 文件本身变化。
         if enabledAgents.contains(.codex), let codexScanner {
             let newTitles = codexScanner.loadTitleIndex()
+            var affected = Set<String>()
             for (sessionID, name) in newTitles where cache.codexTitles[sessionID] != name {
+                affected.insert(sessionID)
+            }
+            for sessionID in cache.codexTitles.keys where newTitles[sessionID] == nil {
+                affected.insert(sessionID)
+            }
+            for sessionID in affected {
                 let id = SessionRecord.makeID(agent: .codex, sessionID: sessionID)
                 if records[id] != nil { changedIDs.insert(id) }
             }
@@ -185,6 +194,21 @@ actor SessionStore {
         )
         persist()
         return diff
+    }
+
+    /// 系统（Core Spotlight delegate）点名重灌时调用：已知 id 强制入 dirty 集合，
+    /// 下一轮 refresh 必产生 upsert；返回本地已不存在的 id（调用方应直接从索引删除）。
+    func markDirty(ids: [String]) -> [String] {
+        var unknown: [String] = []
+        for id in ids {
+            if records[id] != nil {
+                cache.dirtyIDs.insert(id)
+            } else {
+                unknown.append(id)
+            }
+        }
+        persist()
+        return unknown
     }
 
     /// donate 成功后调用，更新已索引集合、清除对应 dirty 标记并落盘

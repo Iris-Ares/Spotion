@@ -154,7 +154,7 @@ final class SpotionIndexDelegate: NSObject, CSSearchableIndexDelegate {
     ) {
         let ack = UncheckedSendable(value: acknowledgementHandler)
         Task { @MainActor in
-            await AppCoordinator.shared.refreshAndApply()
+            await AppCoordinator.shared.reindexIdentifiers(identifiers)
             ack.value()
         }
     }

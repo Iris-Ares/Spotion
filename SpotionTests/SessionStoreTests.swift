@@ -127,6 +127,41 @@ import Testing
         #expect(await store.displayTitle(for: claude) == "Claude 标题")
     }
 
+    @Test func codexTitleRemovalTriggersReindex() async throws {
+        // 标题条目从 session_index.jsonl 消失 → 该会话必须重灌（否则 Spotlight 挂旧标题）
+        let env = try makeEnv()
+        try writeCodexSession(env, title: "会被移除的标题")
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let d1 = await store.refresh(enabledAgents: both)
+        await store.markIndexed(d1)
+
+        try TestSupport.write("", to: env.codexHome.appendingPathComponent("session_index.jsonl"))
+        let d2 = await store.refresh(enabledAgents: both)
+        #expect(d2.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        let record = try #require(await store.record(id: "codex:\(CodexScannerTests.uuid)"))
+        #expect(await store.displayTitle(for: record) == "codex prompt")  // 回退到首 prompt
+    }
+
+    @Test func markDirtyForcesUpsertAndReportsUnknown() async throws {
+        // 系统点名重灌：已知 id 强制产生 upsert（即使文件未变），未知 id 原样返回
+        let env = try makeEnv()
+        try writeCodexSession(env)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let d1 = await store.refresh(enabledAgents: both)
+        await store.markIndexed(d1)
+        #expect(await store.refresh(enabledAgents: both).isEmpty)
+
+        let known = "codex:\(CodexScannerTests.uuid)"
+        let unknown = await store.markDirty(ids: [known, "codex:ghost"])
+        #expect(unknown == ["codex:ghost"])
+        let d2 = await store.refresh(enabledAgents: both)
+        #expect(d2.upserts.map(\.id) == [known])
+    }
+
     @Test func emptyRootDeletesLastSession() async throws {
         // 根目录被成功枚举但已无任何会话文件（[] 而非 nil）→ 最后一个会话必须从索引删除
         let env = try makeEnv()

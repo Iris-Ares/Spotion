@@ -190,6 +190,23 @@ final class AppCoordinator {
         }
     }
 
+    /// 系统点名重灌指定 id：已知的强制入 dirty 后刷新；本地已不存在的直接从索引删除。
+    /// 普通增量刷新对未变更文件不会产生 upsert，直接 ack 会让这些条目永远缺失。
+    func reindexIdentifiers(_ identifiers: [String]) async {
+        await enqueue {
+            await self.ensureReady()
+            let unknown = await self.store.markDirty(ids: identifiers)
+            if !unknown.isEmpty {
+                do {
+                    try await self.indexer.delete(ids: unknown)
+                } catch {
+                    NSLog("Spotion: delete of unknown reindex ids failed: %@", error.localizedDescription)
+                }
+            }
+            await self.performRefreshAndApply()
+        }
+    }
+
     /// 某个 agent 被禁用时按域清除其结果（refresh 的删除 diff 也会兜底）。
     func agentToggled() async {
         for agent in AgentKind.allCases where !SpotionSettings.enabledAgents.contains(agent) {
