@@ -106,7 +106,22 @@ import Testing
         {"id":"\(Self.uuid)","thread_name":"新名字","updated_at":"2026-08-05T00:00:00Z"}
         """
         try TestSupport.write(index + "\n", to: home.appendingPathComponent("session_index.jsonl"))
-        let titles = CodexScanner(codexHome: home).loadTitleIndex()
+        let titles = try #require(CodexScanner(codexHome: home).loadTitleIndex())
         #expect(titles[Self.uuid] == "新名字")
+    }
+
+    @Test func titleIndexDistinguishesMissingFromUnreadable() throws {
+        let home = try TestSupport.makeTempDir()
+        // 文件不存在：合法的空（标题被清除的语义）
+        #expect(CodexScanner(codexHome: home).loadTitleIndex()?.isEmpty == true)
+
+        // 文件存在但不可读：nil（I/O 失败，调用方须保留旧标题）
+        let indexURL = home.appendingPathComponent("session_index.jsonl")
+        try TestSupport.write("{\"id\":\"x\",\"thread_name\":\"y\"}\n", to: indexURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: indexURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: indexURL.path)
+        }
+        #expect(CodexScanner(codexHome: home).loadTitleIndex() == nil)
     }
 }

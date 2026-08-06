@@ -133,12 +133,15 @@ struct CodexScanner: SessionScanner {
     }
 
     /// 56KB 量级的标题索引，后出现的行覆盖先出现的（同 id 多次更新）。
-    func loadTitleIndex() -> [String: String] {
+    /// 返回 nil = 文件存在但读取失败（调用方应保留旧标题，本轮不做标题 diff）；
+    /// 返回 [:] = 索引文件不存在——标题被合法清除，diff 照常。
+    func loadTitleIndex() -> [String: String]? {
         struct Entry: Decodable {
             var id: String?
             var thread_name: String?
         }
-        guard let lines = try? JSONLReader.headLines(of: indexURL, cap: 8 * 1024 * 1024) else { return [:] }
+        guard FileManager.default.fileExists(atPath: indexURL.path) else { return [:] }
+        guard let lines = try? JSONLReader.headLines(of: indexURL, cap: 8 * 1024 * 1024) else { return nil }
         let decoder = JSONDecoder()
         var titles: [String: String] = [:]
         for data in lines {

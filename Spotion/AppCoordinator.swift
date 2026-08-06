@@ -94,12 +94,8 @@ final class AppCoordinator {
             if await store.consumePendingFullRebuild() { needsRebuild = true }
 
             if needsRebuild {
-                // 先持久化义务再动手：deleteAll 失败/崩溃都不会丢掉重试
-                defaults.set(true, forKey: "needsFullRebuild")
-                if await fullReindex() {
-                    defaults.set(2, forKey: "donationPathVersion")
-                    defaults.set(false, forKey: "needsFullRebuild")
-                }
+                // 义务持久化与成功清除由 fullReindex 内部保证
+                await fullReindex()
             } else {
                 await refreshAndApply()
             }
@@ -124,11 +120,15 @@ final class AppCoordinator {
         await enqueue { await self.performRefreshAndApply() }
     }
 
-    /// 返回 deleteAll 是否确认成功——启动迁移只有拿到 true 才允许推进持久化标记。
-    /// 失败时保留 indexedIDs（删除跟踪不丢），本次降级为普通刷新。
+    /// 全量重建自带跨启动重试：动手前把义务持久化到 UserDefaults，
+    /// 只有 deleteAll 确认成功才清除并推进 donationPathVersion——
+    /// 无论调用方是启动迁移、系统 reindex 委托、intent 还是 UI 按钮，
+    /// 失败/崩溃都会在后续启动重试，而不是 ack 之后被遗忘。
+    /// 失败的当轮保留 indexedIDs（删除跟踪不丢），降级为普通刷新。
     @discardableResult
     func fullReindex() async -> Bool {
-        await enqueue {
+        UserDefaults.standard.set(true, forKey: "needsFullRebuild")
+        let cleaned = await enqueue {
             var cleaned = false
             do {
                 try await self.indexer.deleteAll()
@@ -141,6 +141,11 @@ final class AppCoordinator {
             await self.performRefreshAndApply()
             return cleaned
         }
+        if cleaned {
+            UserDefaults.standard.set(false, forKey: "needsFullRebuild")
+            UserDefaults.standard.set(2, forKey: "donationPathVersion")
+        }
+        return cleaned
     }
 
     private func enqueue<T: Sendable>(_ work: @escaping @MainActor () async -> T) async -> T {

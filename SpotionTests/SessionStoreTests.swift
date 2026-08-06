@@ -144,6 +144,28 @@ import Testing
         #expect(await store.displayTitle(for: record) == "codex prompt")  // 回退到首 prompt
     }
 
+    @Test func titleIndexReadFailurePreservesTitles() async throws {
+        // session_index.jsonl 暂时不可读 → 保留旧标题，不得当成"全部标题被清除"批量重灌
+        let env = try makeEnv()
+        try writeCodexSession(env, title: "原标题")
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let d1 = await store.refresh(enabledAgents: both)
+        await store.markIndexed(d1)
+
+        let indexURL = env.codexHome.appendingPathComponent("session_index.jsonl")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: indexURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: indexURL.path)
+        }
+
+        let d2 = await store.refresh(enabledAgents: both)
+        #expect(d2.isEmpty)
+        let record = try #require(await store.record(id: "codex:\(CodexScannerTests.uuid)"))
+        #expect(await store.displayTitle(for: record) == "原标题")
+    }
+
     @Test func markDirtyForcesUpsertAndReportsUnknown() async throws {
         // 系统点名重灌：已知 id 强制产生 upsert（即使文件未变），未知 id 原样返回
         let env = try makeEnv()

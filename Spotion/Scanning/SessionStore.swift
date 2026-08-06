@@ -161,8 +161,10 @@ actor SessionStore {
         // codex 标题索引：变化只触发重新 donate，不重读 rollout 文件。
         // 双向比较——新增/改名之外，标题被清除或条目消失（旧有新无）同样要重灌，
         // 否则 Spotlight 会一直挂着旧标题直到 rollout 文件本身变化。
-        if enabledAgents.contains(.codex), let codexScanner {
-            let newTitles = codexScanner.loadTitleIndex()
+        // loadTitleIndex() 为 nil = 读取失败：保留现有标题，本轮跳过 diff，
+        // 避免把 I/O 抖动当成"全部标题被清除"而批量降级重灌。
+        if enabledAgents.contains(.codex), let codexScanner,
+           let newTitles = codexScanner.loadTitleIndex() {
             var affected = Set<String>()
             for (sessionID, name) in newTitles where cache.codexTitles[sessionID] != name {
                 affected.insert(sessionID)
