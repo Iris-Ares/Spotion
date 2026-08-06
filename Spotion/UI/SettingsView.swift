@@ -18,9 +18,12 @@ struct SettingsView: View {
 private struct GeneralSettingsTab: View {
     @State private var codexEnabled = SpotionSettings.enabledAgents.contains(.codex)
     @State private var claudeEnabled = SpotionSettings.enabledAgents.contains(.claude)
+    @State private var codexTarget = SpotionSettings.launchTarget(for: .codex)
+    @State private var claudeTarget = SpotionSettings.launchTarget(for: .claude)
     @State private var terminal = SpotionSettings.terminal
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
+    @State private var missingNativeApps: [AgentKind] = []
 
     var body: some View {
         Form {
@@ -31,12 +34,45 @@ private struct GeneralSettingsTab: View {
                     .onChange(of: claudeEnabled) { applyAgents() }
             }
             Section("打开方式") {
+                Picker("Codex 会话", selection: $codexTarget) {
+                    ForEach(LaunchTarget.allCases, id: \.rawValue) { target in
+                        Text(target.displayName).tag(target)
+                    }
+                }
+                .onChange(of: codexTarget) {
+                    SpotionSettings.setLaunchTarget(codexTarget, for: .codex)
+                    refreshNativeAvailability()
+                }
+                Picker("Claude Code 会话", selection: $claudeTarget) {
+                    ForEach(LaunchTarget.allCases, id: \.rawValue) { target in
+                        Text(target.displayName).tag(target)
+                    }
+                }
+                .onChange(of: claudeTarget) {
+                    SpotionSettings.setLaunchTarget(claudeTarget, for: .claude)
+                    refreshNativeAvailability()
+                }
                 Picker("终端", selection: $terminal) {
                     ForEach(TerminalApp.allCases, id: \.rawValue) { app in
                         Text(app.displayName).tag(app)
                     }
                 }
                 .onChange(of: terminal) { SpotionSettings.terminal = terminal }
+                ForEach(missingNativeApps, id: \.rawValue) { agent in
+                    Text("未检测到能打开 \(agent.displayName) 会话的桌面应用（\(NativeAppLink.scheme(for: agent))://），该来源的会话将无法打开")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if claudeTarget == .nativeApp {
+                    Text("Claude 桌面版以「导入副本」方式打开会话：侧边栏会多一条由 App 自行命名的同内容会话，且导入会精简原始记录文件（Claude.app 行为）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if codexTarget == .nativeApp || claudeTarget == .nativeApp {
+                    Text("新建会话（Quick Create）始终在终端启动")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section {
                 Toggle("登录时启动 Spotion", isOn: $launchAtLogin)
@@ -47,6 +83,20 @@ private struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { refreshNativeAvailability() }
+    }
+
+    private func target(for agent: AgentKind) -> LaunchTarget {
+        switch agent {
+        case .codex: codexTarget
+        case .claude: claudeTarget
+        }
+    }
+
+    private func refreshNativeAvailability() {
+        missingNativeApps = AgentKind.allCases.filter {
+            target(for: $0) == .nativeApp && NativeAppLauncher.shared.installedAppURL(for: $0) == nil
+        }
     }
 
     private func applyAgents() {

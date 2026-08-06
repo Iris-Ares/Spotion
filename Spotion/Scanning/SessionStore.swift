@@ -151,7 +151,18 @@ actor SessionStore {
             // the file is readable again — caching nil here would evict the
             // session and never retry (the new mtime would match forever).
             if case .ioFailure = outcome { continue }
-            let record = outcome.record
+            var record = outcome.record
+            // Claude desktop's claude://resume import rewrites the transcript
+            // in place with the tail title records stripped. Same path + same
+            // session id but the title vanished → carry the previous title
+            // forward instead of degrading the Spotlight row to its first
+            // prompt. A later legitimate title record overwrites it normally.
+            if var updated = record, updated.fallbackTitle == nil,
+               let previous = cache.entries[file.path]?.record,
+               previous.id == updated.id, previous.fallbackTitle != nil {
+                updated.fallbackTitle = previous.fallbackTitle
+                record = updated
+            }
             // If this path previously held a valid record and now parses to nil
             // (or to a different id), the old id must be marked changed: a
             // fallback rollout with the same id needs re-donation, and a fully
