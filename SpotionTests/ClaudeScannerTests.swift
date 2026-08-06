@@ -117,6 +117,17 @@ import Testing
         #expect(record.fallbackTitle == "扩窗标题")
     }
 
+    @Test func tailExpansionPrefersHigherPriorityTitleDeeperInFile() throws {
+        // custom-title 在文件前部、last-prompt 在最尾部：
+        // 64KB 窗口只见 last-prompt，扩窗必须继续，最终以 custom-title 为准
+        var lines = [Self.user("prompt"), Self.customTitle("更高优先级的标题")]
+        for _ in 0..<50 { lines.append(Self.assistantFiller(2000)) }
+        lines.append(Self.lastPrompt("尾部的低优先级提示"))
+        let home = try makeHome(lines: lines)
+        let record = try firstRecord(home: home)
+        #expect(record.fallbackTitle == "更高优先级的标题")
+    }
+
     @Test func noCwdReturnsNil() throws {
         let home = try makeHome(lines: [Self.queueOp])
         let scanner = ClaudeScanner(claudeHome: home)

@@ -154,9 +154,13 @@ struct ClaudeScanner: SessionScanner {
         !text.hasPrefix("<") && !text.hasPrefix("Caveat:")
     }
 
-    /// 尾部 64KB 起步、找不到任何标题记录则倍增扩窗到 512KB。
+    /// 尾部 64KB 起步、倍增扩窗（上限 512KB）。
+    /// 只有找到 custom-title（最高优先级）才提前停止；仅有 ai-title / last-prompt 时
+    /// 继续扩窗——更早的位置可能藏着更高优先级的记录，过早返回会让窗口里的
+    /// last-prompt 抢走 custom/ai-title 的位置，违背标题优先级。
     private static func scanTailTitles(url: URL, fileSize: Int64) -> (custom: String?, ai: String?, lastPrompt: String?) {
         let decoder = JSONDecoder()
+        let maxCap = 512 * 1024
         var cap = 64 * 1024
         while true {
             guard let lines = try? JSONLReader.tailLines(of: url, cap: cap) else { return (nil, nil, nil) }
@@ -172,8 +176,8 @@ struct ClaudeScanner: SessionScanner {
                 default: break
                 }
             }
-            if custom != nil || ai != nil || lastPrompt != nil { return (custom, ai, lastPrompt) }
-            if Int64(cap) >= fileSize || cap >= 512 * 1024 { return (nil, nil, nil) }
+            if custom != nil { return (custom, ai, lastPrompt) }
+            if Int64(cap) >= fileSize || cap >= maxCap { return (custom, ai, lastPrompt) }
             cap *= 2
         }
     }

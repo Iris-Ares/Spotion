@@ -83,15 +83,23 @@ final class AppCoordinator {
             Task { @MainActor in await AppCoordinator.shared.refreshAndApply() }
         }
         Task {
-            // 需要全量重建（deleteAll + 重灌）的两种情况：
+            // 需要全量重建（deleteAll + 重灌）的三种情况：
             // 1. donate 路径从 indexAppEntities 迁移到 CSSearchableItem+associateAppEntity
             // 2. 缓存 schema 升版/损坏导致旧 indexedIDs 丢失——不 deleteAll 的话，
             //    升级前已删除会话的 Spotlight 条目将永远无法清除
-            let needsDonationMigration = UserDefaults.standard.integer(forKey: "donationPathVersion") < 2
-            let cacheWasReset = await store.consumePendingFullRebuild()
-            if needsDonationMigration || cacheWasReset {
-                await fullReindex()
-                UserDefaults.standard.set(2, forKey: "donationPathVersion")
+            // 3. 上次重建的 deleteAll 未确认成功（义务持久化在 UserDefaults，跨启动重试）
+            let defaults = UserDefaults.standard
+            var needsRebuild = defaults.bool(forKey: "needsFullRebuild")
+            if defaults.integer(forKey: "donationPathVersion") < 2 { needsRebuild = true }
+            if await store.consumePendingFullRebuild() { needsRebuild = true }
+
+            if needsRebuild {
+                // 先持久化义务再动手：deleteAll 失败/崩溃都不会丢掉重试
+                defaults.set(true, forKey: "needsFullRebuild")
+                if await fullReindex() {
+                    defaults.set(2, forKey: "donationPathVersion")
+                    defaults.set(false, forKey: "needsFullRebuild")
+                }
             } else {
                 await refreshAndApply()
             }
@@ -116,29 +124,33 @@ final class AppCoordinator {
         await enqueue { await self.performRefreshAndApply() }
     }
 
-    func fullReindex() async {
+    /// 返回 deleteAll 是否确认成功——启动迁移只有拿到 true 才允许推进持久化标记。
+    /// 失败时保留 indexedIDs（删除跟踪不丢），本次降级为普通刷新。
+    @discardableResult
+    func fullReindex() async -> Bool {
         await enqueue {
+            var cleaned = false
             do {
                 try await self.indexer.deleteAll()
-                // 仅在 deleteAll 确认成功后才忘记已索引集合；
-                // 失败时保留 indexedIDs，删除跟踪不丢，本次降级为普通刷新
                 await self.store.forgetIndexed()
+                cleaned = true
             } catch {
                 NSLog("Spotion: deleteAll failed: %@", error.localizedDescription)
                 self.uiState.lastError = error.localizedDescription
             }
             await self.performRefreshAndApply()
+            return cleaned
         }
     }
 
-    private func enqueue(_ work: @escaping @MainActor () async -> Void) async {
+    private func enqueue<T: Sendable>(_ work: @escaping @MainActor () async -> T) async -> T {
         let previous = pipeline
-        let task = Task { @MainActor in
+        let task = Task { @MainActor () -> T in
             await previous?.value
-            await work()
+            return await work()
         }
-        pipeline = task
-        await task.value
+        pipeline = Task { _ = await task.value }
+        return await task.value
     }
 
     private func performRefreshAndApply() async {
