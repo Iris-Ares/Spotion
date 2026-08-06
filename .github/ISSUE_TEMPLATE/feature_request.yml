@@ -1,0 +1,36 @@
+name: 💡 Feature request
+description: Suggest an improvement or new capability
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Before requesting
+      options:
+        - label: I searched existing issues and this hasn't been suggested yet
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that Spotion doesn't support today?
+      placeholder: "When I …, I have to …, which is annoying because …"
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work? Concrete UX beats implementation detail.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or other designs that could solve the same problem.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, links, related issues.

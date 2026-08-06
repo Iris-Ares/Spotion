@@ -1,0 +1,79 @@
+name: 🐛 Bug report
+description: Something in Spotion doesn't work as documented
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Before reporting
+      options:
+        - label: I searched existing issues and this hasn't been reported yet
+          required: true
+        - label: For Spotlight/App Intents issues — I tested against the `/Applications/Spotion.app` copy (not a DerivedData build)
+          required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Pressed ⌘Space and typed "…"
+        2. Expected the session to appear / resume
+        3. Instead …
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Affected agent
+      multiple: true
+      options:
+        - Codex CLI
+        - Claude Code
+        - Both / not agent-specific
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it go wrong?
+      options:
+        - Search — sessions missing or stale in Spotlight
+        - Open — resuming in Terminal.app / Ghostty
+        - Open — desktop app deep link (claude:// / codex://)
+        - Quick Create — New Codex/Claude Session actions
+        - Menu bar / Settings UI
+        - Build / install
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: selfcheck
+    attributes:
+      label: Index self-check result (for search issues)
+      description: "Settings → Index → self-check: does a direct index query find your term?"
+      options:
+        - Not applicable / didn't run
+        - Hits > 0 (index OK, Spotlight UI doesn't show it)
+        - 0 hits (donation never landed)
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: e.g. macOS 26.1 (25B123)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Spotion version or commit
+      placeholder: e.g. 0.1.0 / main @ f5992c4
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Paste the scan report (menu bar → *Copy Scan Report*) — **review it first**: it contains your five most recent session titles and project names, redact anything private. Relevant `Spotion:` lines from Console.app help too.
+      render: text
