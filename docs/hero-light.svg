@@ -41,36 +41,39 @@
   <!-- section: agent sessions -->
   <text x="272" y="214" font-size="11.5" font-weight="600" letter-spacing="0.6" fill="#8A929E">AGENT SESSIONS</text>
 
-  <!-- row 1 (selected, Claude) -->
+  <!-- row 1 (selected, Claude): app-icon-style tile, stylized stand-in mark -->
   <rect x="252" y="226" width="696" height="58" rx="14" fill="#2E6FF2"/>
-  <g stroke="#FFFFFF" stroke-width="2" fill="none">
-    <circle cx="288" cy="255" r="13"/>
-    <g stroke-linecap="round">
-      <line x1="288" y1="248.5" x2="288" y2="261.5"/>
-      <line x1="282.4" y1="251.75" x2="293.6" y2="258.25"/>
-      <line x1="282.4" y1="258.25" x2="293.6" y2="251.75"/>
+  <g>
+    <rect x="271" y="238" width="34" height="34" rx="8.5" fill="#F3EDE3" stroke="#00000012"/>
+    <g stroke="#D97757" stroke-width="2.6" fill="none" stroke-linecap="round">
+      <line x1="288" y1="247.5" x2="288" y2="262.5"/>
+      <line x1="281.5" y1="251.25" x2="294.5" y2="258.75"/>
+      <line x1="281.5" y1="258.75" x2="294.5" y2="251.25"/>
     </g>
   </g>
   <text x="316" y="251" font-size="16.5" font-weight="600" fill="#FFFFFF">Fix OAuth token refresh race</text>
   <text x="316" y="272" font-size="13" fill="#D8E4FF">Claude Code · api-server · feat/token-rotation</text>
   <text x="928" y="261" text-anchor="end" font-size="15" fill="#CFE0FF">⏎</text>
 
-  <!-- row 2 (Codex) -->
-  <g stroke="#5B6572" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <polyline points="279,308 272,315 279,322"/>
-    <polyline points="297,308 304,315 297,322"/>
-    <line x1="291" y1="306" x2="285" y2="324"/>
+  <!-- row 2 (Codex): app-icon-style tile, stylized stand-in mark -->
+  <g>
+    <rect x="271" y="298" width="34" height="34" rx="8.5" fill="#161618" stroke="#00000012"/>
+    <g stroke="#FFFFFF" stroke-width="2.1" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="282,310 277,315 282,320"/>
+      <polyline points="294,310 299,315 294,320"/>
+      <line x1="290" y1="308.5" x2="286" y2="321.5"/>
+    </g>
   </g>
   <text x="316" y="313" font-size="16.5" fill="#1D1D1F">Add pagination to session list</text>
   <text x="316" y="334" font-size="13" fill="#6E7683">Codex · webapp</text>
 
-  <!-- row 3 (Claude) -->
-  <g stroke="#5B6572" stroke-width="2" fill="none">
-    <circle cx="288" cy="375" r="13"/>
-    <g stroke-linecap="round">
-      <line x1="288" y1="368.5" x2="288" y2="381.5"/>
-      <line x1="282.4" y1="371.75" x2="293.6" y2="378.25"/>
-      <line x1="282.4" y1="378.25" x2="293.6" y2="371.75"/>
+  <!-- row 3 (Claude): app-icon-style tile, stylized stand-in mark -->
+  <g>
+    <rect x="271" y="358" width="34" height="34" rx="8.5" fill="#F3EDE3" stroke="#00000012"/>
+    <g stroke="#D97757" stroke-width="2.6" fill="none" stroke-linecap="round">
+      <line x1="288" y1="367.5" x2="288" y2="382.5"/>
+      <line x1="281.5" y1="371.25" x2="294.5" y2="378.75"/>
+      <line x1="281.5" y1="378.75" x2="294.5" y2="371.25"/>
     </g>
   </g>
   <text x="316" y="373" font-size="16.5" fill="#1D1D1F">Migrate scanners to Swift 6 concurrency</text>

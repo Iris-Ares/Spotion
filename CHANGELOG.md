@@ -33,4 +33,11 @@ will get a dated section here that doubles as its release notes.
 - Liquid Glass app icon and matching menu-bar icon
   ([#7](https://github.com/Iris-Ares/Spotion/pull/7)).
 
+### Fixed
+
+- Spotlight results no longer show a blank placeholder: each session now
+  carries its agent's desktop-app icon (resolved at runtime, falling back to
+  Spotion's own icon), kept fresh when handler apps are installed, removed, or
+  updated ([#10](https://github.com/Iris-Ares/Spotion/pull/10)).
+
 [Unreleased]: https://github.com/Iris-Ares/Spotion/commits/main
