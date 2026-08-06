@@ -222,7 +222,14 @@ final class AppCoordinator {
         let started = Date()
         var applied = true
 
-        let diff = await store.refresh(enabledAgents: SpotionSettings.enabledAgents)
+        // Fingerprint each enabled agent's icon source so the store can force
+        // a re-donation of unchanged sessions when a handler app was
+        // installed, removed, or replaced since the last pass.
+        let enabled = SpotionSettings.enabledAgents
+        let iconSources = Dictionary(uniqueKeysWithValues: enabled.map {
+            ($0, AgentIconProvider.shared.sourceFingerprint(for: $0))
+        })
+        let diff = await store.refresh(enabledAgents: enabled, iconSources: iconSources)
         do {
             if !diff.upserts.isEmpty {
                 let titled = await store.titled(records: diff.upserts)

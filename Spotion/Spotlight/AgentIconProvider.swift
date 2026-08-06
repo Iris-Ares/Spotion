@@ -19,26 +19,42 @@ final class AgentIconProvider: Sendable {
     private static let pixelSize = 256
 
     private struct Entry {
-        /// Resolved handler app path; "" when falling back to Spotion's icon.
-        var sourcePath: String
+        var fingerprint: String
         var png: Data?
     }
 
     private let cache = Mutex<[AgentKind: Entry]>([:])
 
+    /// Opaque change token for the agent's icon source: resolved handler app
+    /// path plus its bundle mtime ("" when no handler is installed and the
+    /// Spotion fallback applies). The coordinator hands these to
+    /// SessionStore.refresh so that installing/removing/replacing/updating a
+    /// handler app re-donates the agent's unchanged sessions.
+    func sourceFingerprint(for agent: AgentKind) -> String {
+        Self.resolveSource(for: agent).fingerprint
+    }
+
     /// PNG thumbnail for the agent's results. nil only if even the fallback
     /// failed to render — callers then leave the attribute unset.
     func thumbnailPNG(for agent: AgentKind) -> Data? {
-        let appURL = NSWorkspace.shared.urlForApplication(toOpen: NativeAppLink.probeURL(for: agent))
-        let sourcePath = appURL?.path ?? ""
+        let source = Self.resolveSource(for: agent)
         return cache.withLock { cache in
-            if let entry = cache[agent], entry.sourcePath == sourcePath {
+            if let entry = cache[agent], entry.fingerprint == source.fingerprint {
                 return entry.png
             }
-            let png = Self.renderPNG(appURL: appURL)
-            cache[agent] = Entry(sourcePath: sourcePath, png: png)
+            let png = Self.renderPNG(appURL: source.appURL)
+            cache[agent] = Entry(fingerprint: source.fingerprint, png: png)
             return png
         }
+    }
+
+    /// The mtime component catches an in-place app update swapping its icon,
+    /// which a bare path would miss.
+    private static func resolveSource(for agent: AgentKind) -> (appURL: URL?, fingerprint: String) {
+        guard let appURL = NSWorkspace.shared.urlForApplication(toOpen: NativeAppLink.probeURL(for: agent))
+        else { return (nil, "") }
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: appURL.path))?[.modificationDate] as? Date
+        return (appURL, "\(appURL.path)|\(mtime?.timeIntervalSince1970 ?? 0)")
     }
 
     private static func renderPNG(appURL: URL?) -> Data? {

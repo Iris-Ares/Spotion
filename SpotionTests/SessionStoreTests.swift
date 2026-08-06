@@ -425,6 +425,46 @@ import Testing
         #expect(await store3.pendingGhostDeletions() == ["codex:ghost-2"])
     }
 
+    @Test func iconSourceChangeRedonatesAgentSessions() async throws {
+        // Donated thumbnails embed the handler app's icon: a fingerprint drift
+        // (app installed/removed/replaced) must re-donate every session of the
+        // agent even though the session files are unchanged
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+        let secondUuid = "bbbbcccc-1122-3344-5566-77889900aabb"
+        try writeClaudeSession(env, uuid: secondUuid)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let v1: [AgentKind: String] = [.codex: "codex-v1", .claude: ""]
+        let d1 = await store.refresh(enabledAgents: both, iconSources: v1)
+        #expect(d1.upserts.count == 3)
+        await store.markIndexed(d1)
+
+        // Unchanged fingerprints → no churn
+        let d2 = await store.refresh(enabledAgents: both, iconSources: v1)
+        #expect(d2.isEmpty)
+
+        // Claude desktop app appeared → both claude sessions re-donate, codex untouched
+        let v2: [AgentKind: String] = [.codex: "codex-v1", .claude: "/Applications/Claude.app|123"]
+        let d3 = await store.refresh(enabledAgents: both, iconSources: v2)
+        #expect(Set(d3.upserts.map(\.id)) == ["claude:\(ClaudeScannerTests.uuid)", "claude:\(secondUuid)"])
+
+        // Simulate a donation failure (no markIndexed): the obligation lives
+        // in dirtyIDs and must survive even though the stored fingerprint
+        // already advanced
+        let d4 = await store.refresh(enabledAgents: both, iconSources: v2)
+        #expect(Set(d4.upserts.map(\.id)) == ["claude:\(ClaudeScannerTests.uuid)", "claude:\(secondUuid)"])
+        await store.markIndexed(d4)
+
+        // Fingerprints persist in the scan cache across restarts
+        let store2 = makeStore(env)
+        await store2.bootstrap()
+        let d5 = await store2.refresh(enabledAgents: both, iconSources: v2)
+        #expect(d5.isEmpty)
+    }
+
     @Test func disablingAgentRemovesItsRecords() async throws {
         let env = try makeEnv()
         try writeCodexSession(env)
