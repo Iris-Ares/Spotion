@@ -14,7 +14,7 @@
   </defs>
 
   <!-- backdrop -->
-  <rect width="1200" height="620" rx="24" fill="url(#backdrop)"/>
+  <rect width="1200" height="620" fill="url(#backdrop)"/>
 
   <!-- ⌘ Space hint -->
   <g>
