@@ -1,0 +1,114 @@
+name: Release
+
+# Pushing a tag vX.Y.Z is the entire release action: it builds the app with
+# that version, packages a ZIP, EdDSA-signs the update feed, and publishes a
+# GitHub Release. See docs/RELEASING.md for the full procedure and rollback.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  # Keep all three in sync when bumping Sparkle:
+  # this URL/SHA256 pair and the `exactVersion` pin in project.yml.
+  SPARKLE_VERSION: "2.9.5"
+  SPARKLE_SHA256: "015336b601493e05c237964954bff6191370003d94edefe663724c88840d73cc"
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Derive and validate version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must be vMAJOR.MINOR.PATCH (got: $GITHUB_REF_NAME)"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Test
+        run: xcodebuild -project Spotion.xcodeproj -scheme Spotion -derivedDataPath build test
+
+      - name: Build Release (version stamped from tag)
+        run: |
+          xcodebuild -project Spotion.xcodeproj -scheme Spotion \
+            -configuration Release -derivedDataPath build \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$VERSION" \
+            build
+
+      # ── Developer ID + notarization insertion point ──────────────────────
+      # Builds are currently ad-hoc signed (no Apple Developer membership).
+      # Once one exists, follow docs/RELEASING.md §"Adding Developer ID
+      # signing + notarization":
+      #   1. import the Developer ID Application cert into a temp keychain
+      #      (secrets: DEVID_CERT_P12_BASE64, DEVID_CERT_PASSWORD)
+      #   2. flip project.yml to hardened runtime + entitlements and build
+      #      with CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM=…
+      #   3. xcrun notarytool submit --wait
+      #      (secrets: NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_PASSWORD)
+      #   4. xcrun stapler staple Spotion.app   ← staple BEFORE zipping
+      # ─────────────────────────────────────────────────────────────────────
+
+      - name: Package ZIP
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Build/Products/Release/Spotion.app" \
+            "dist/Spotion-$VERSION.zip"
+
+      - name: Download Sparkle tools (pinned)
+        run: |
+          curl -fsSL -o sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+          echo "$SPARKLE_SHA256  sparkle.tar.xz" | shasum -a 256 -c -
+          mkdir -p sparkle-dist
+          tar -xf sparkle.tar.xz -C sparkle-dist
+
+      - name: Generate EdDSA-signed appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          # Single-entry appcast: dist/ holds exactly this release's ZIP, and
+          # the enclosure URL points at the *versioned* download path, so old
+          # releases' appcasts stay valid forever while SUFeedURL rides the
+          # releases/latest/ redirect.
+          echo -n "$SPARKLE_PRIVATE_KEY" | ./sparkle-dist/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/Iris-Ares/Spotion/releases/download/v$VERSION/" \
+            --full-release-notes-url "https://github.com/Iris-Ares/Spotion/releases/tag/v$VERSION" \
+            --link "https://github.com/Iris-Ares/Spotion" \
+            --maximum-deltas 0 \
+            -o dist/appcast.xml \
+            dist
+          cat dist/appcast.xml
+
+      - name: Checksums
+        run: |
+          cd dist
+          shasum -a 256 "Spotion-$VERSION.zip" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Draft → publish so the release only becomes `latest` (and the
+          # appcast feed URL only points here) once every asset is uploaded.
+          gh release create "$GITHUB_REF_NAME" \
+            --draft --verify-tag \
+            --title "Spotion $VERSION" \
+            --generate-notes \
+            "dist/Spotion-$VERSION.zip" "dist/appcast.xml" "dist/SHA256SUMS.txt"
+          gh release edit "$GITHUB_REF_NAME" --draft=false

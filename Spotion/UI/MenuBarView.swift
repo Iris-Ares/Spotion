@@ -2,8 +2,20 @@ import SwiftUI
 
 struct MenuBarView: View {
     private var state = AppCoordinator.shared.uiState
+    private var updates = UpdateManager.shared.state
 
     var body: some View {
+        if let version = updates.availableVersion {
+            Button("有新版本 v\(version) — 立即更新") {
+                UpdateManager.shared.checkForUpdates()
+            }
+            if let notes = updates.releaseNotesURL {
+                Button("查看更新说明") {
+                    NSWorkspace.shared.open(notes)
+                }
+            }
+            Divider()
+        }
         if state.recent.isEmpty {
             Text(state.isScanning ? "正在扫描会话…" : "尚未索引任何会话")
         } else {
@@ -33,6 +45,9 @@ struct MenuBarView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(report, forType: .string)
             }
+        }
+        Button("Check for Updates…") {
+            UpdateManager.shared.checkForUpdates()
         }
         Divider()
         SettingsLink {

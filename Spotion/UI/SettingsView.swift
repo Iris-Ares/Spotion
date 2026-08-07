@@ -1,4 +1,5 @@
 import ServiceManagement
+import Sparkle
 import SwiftUI
 
 struct SettingsView: View {
@@ -24,6 +25,8 @@ private struct GeneralSettingsTab: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
     @State private var missingNativeApps: [AgentKind] = []
+    @State private var autoCheckUpdates = UpdateManager.shared.updater.automaticallyChecksForUpdates
+    @State private var canCheckForUpdates = true
 
     var body: some View {
         Form {
@@ -81,9 +84,28 @@ private struct GeneralSettingsTab: View {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
             }
+            Section("软件更新") {
+                LabeledContent("当前版本", value: appVersion)
+                Toggle("自动检查更新", isOn: $autoCheckUpdates)
+                    .onChange(of: autoCheckUpdates) {
+                        UpdateManager.shared.updater.automaticallyChecksForUpdates = autoCheckUpdates
+                    }
+                Button("Check for Updates…") { UpdateManager.shared.checkForUpdates() }
+                    .disabled(!canCheckForUpdates)
+                    .onReceive(UpdateManager.shared.updater.publisher(for: \.canCheckForUpdates)) {
+                        canCheckForUpdates = $0
+                    }
+                Text("更新来自 GitHub Releases（github.com/Iris-Ares/Spotion）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .onAppear { refreshNativeAvailability() }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     }
 
     private func target(for agent: AgentKind) -> LaunchTarget {

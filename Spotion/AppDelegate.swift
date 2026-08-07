@@ -5,6 +5,7 @@ import CoreSpotlight
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppCoordinator.shared.start()
+        _ = UpdateManager.shared
     }
 
     /// Fallback for the legacy Core Spotlight click path: when a Spotlight
