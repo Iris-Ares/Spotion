@@ -328,6 +328,41 @@ import Testing
         })
     }
 
+    @Test func preGitBranchCacheReparsesAndUpsertsOnce() async throws {
+        let env = try makeEnv()
+        let sessionURL = try TestSupport.write(
+            [
+                CodexScannerTests.meta(extra: ",\"git\":{\"branch\":\"feature/cache-migration\"}"),
+                CodexScannerTests.userMessage("cached prompt"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        let values = try sessionURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let mtime = try #require(values.contentModificationDate)
+        let size = Int64(try #require(values.fileSize))
+
+        var legacyRecord = try #require(CodexScanner(codexHome: env.codexHome)
+            .parse(ScannedFile(path: sessionURL.path, mtime: mtime, size: size)).record)
+        legacyRecord.gitBranch = nil
+        var legacyCache = ScanCache()
+        legacyCache.version = 6
+        legacyCache.entries[sessionURL.path] = ScanCacheEntry(
+            mtime: mtime, size: size, record: legacyRecord)
+        legacyCache.indexedIDs = [legacyRecord.id]
+        let cacheData = try JSONEncoder().encode(legacyCache)
+        try TestSupport.write(String(decoding: cacheData, as: UTF8.self), to: env.cacheURL)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        #expect(await store.consumePendingFullRebuild())
+
+        let migrated = await store.refresh(enabledAgents: [.codex])
+        let record = try #require(migrated.upserts.first)
+        #expect(migrated.upserts.count == 1)
+        #expect(record.gitBranch == "feature/cache-migration")
+        await store.markIndexed(migrated)
+        #expect(await store.refresh(enabledAgents: [.codex]).isEmpty)
+    }
+
     @Test func displayTitlePriorities() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "索引里的标题")
