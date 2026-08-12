@@ -32,6 +32,10 @@ will get a dated section here that doubles as its release notes.
   ([#6](https://github.com/Iris-Ares/Spotion/pull/6)).
 - Liquid Glass app icon and matching menu-bar icon
   ([#7](https://github.com/Iris-Ares/Spotion/pull/7)).
+- Homebrew install via `brew install --cask Iris-Ares/tap/spotion`, served from the
+  [Iris-Ares/homebrew-tap](https://github.com/Iris-Ares/homebrew-tap) repository;
+  the release workflow bumps the cask automatically on every tag
+  ([#16](https://github.com/Iris-Ares/Spotion/pull/16)).
 
 ### Fixed
 
