@@ -54,10 +54,31 @@ struct CodexScanner: SessionScanner {
 
     private struct MetaLine: Decodable {
         struct Payload: Decodable {
+            struct GitMetadata: Decodable {
+                var branch: String?
+            }
+
             var session_id: String?
             var id: String?
             var cwd: String?
             var timestamp: String?
+            var git: GitMetadata?
+
+            private enum CodingKeys: String, CodingKey {
+                case session_id, id, cwd, timestamp, git
+            }
+
+            /// Codex metadata is internal and may change shape. Decode every
+            /// field independently so an unknown or malformed git payload can
+            /// never make an otherwise valid session unusable.
+            init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                session_id = try? values.decode(String.self, forKey: .session_id)
+                id = try? values.decode(String.self, forKey: .id)
+                cwd = try? values.decode(String.self, forKey: .cwd)
+                timestamp = try? values.decode(String.self, forKey: .timestamp)
+                git = try? values.decode(GitMetadata.self, forKey: .git)
+            }
         }
         var payload: Payload
     }
@@ -131,6 +152,8 @@ struct CodexScanner: SessionScanner {
         guard !sessionID.isEmpty else { return .unusable }
 
         let cwd = meta.cwd ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let trimmedBranch = meta.git?.branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let gitBranch = trimmedBranch.flatMap { $0.isEmpty ? nil : $0 }
         return .record(SessionRecord(
             id: SessionRecord.makeID(agent: .codex, sessionID: sessionID),
             agent: .codex,
@@ -140,7 +163,7 @@ struct CodexScanner: SessionScanner {
             laterPromptSnippets: [],
             cwd: cwd,
             projectName: (cwd as NSString).lastPathComponent,
-            gitBranch: nil,
+            gitBranch: gitBranch,
             startedAt: meta.timestamp.flatMap(ISO8601.date(from:)),
             lastActivityAt: file.mtime,
             filePath: file.path,
