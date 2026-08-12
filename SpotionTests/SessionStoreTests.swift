@@ -136,6 +136,59 @@ import Testing
         #expect(stats.claudeCount == 1)
     }
 
+    @Test func togglingLaterPromptSearchRedonatesOnceThenStabilizes() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("codex first"),
+                CodexScannerTests.userMessage("codex distinctive later phrase"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        try TestSupport.write(
+            [
+                ClaudeScannerTests.user("claude first"),
+                ClaudeScannerTests.user("claude distinctive later phrase"),
+            ].joined(separator: "\n") + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeLaterPrompts: false)
+        #expect(initial.upserts.count == 2)
+        #expect(initial.upserts.allSatisfy { $0.laterPromptSnippets.isEmpty })
+        await store.markIndexed(initial)
+        #expect(await store.refresh(enabledAgents: both, includeLaterPrompts: false).isEmpty)
+
+        let enabled = await store.refresh(enabledAgents: both, includeLaterPrompts: true)
+        #expect(enabled.upserts.count == 2)
+        #expect(enabled.upserts.contains { $0.laterPromptSnippets == ["codex distinctive later phrase"] })
+        #expect(enabled.upserts.contains { $0.laterPromptSnippets == ["claude distinctive later phrase"] })
+        await store.markIndexed(enabled)
+        #expect(await store.refresh(enabledAgents: both, includeLaterPrompts: true).isEmpty)
+        let persistedCache = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        #expect(!persistedCache.contains("distinctive later phrase"))
+
+        // A full rebuild after relaunch must hydrate the non-persisted prompt
+        // snippets before donating every record again.
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        await relaunched.forgetIndexed()
+        let rebuilt = await relaunched.refresh(enabledAgents: both, includeLaterPrompts: true)
+        #expect(rebuilt.upserts.count == 2)
+        #expect(rebuilt.upserts.contains { $0.laterPromptSnippets == ["codex distinctive later phrase"] })
+        #expect(rebuilt.upserts.contains { $0.laterPromptSnippets == ["claude distinctive later phrase"] })
+
+        let disabled = await store.refresh(enabledAgents: both, includeLaterPrompts: false)
+        #expect(disabled.upserts.count == 2)
+        #expect(disabled.upserts.allSatisfy { $0.laterPromptSnippets.isEmpty })
+        #expect(disabled.upserts.allSatisfy {
+            !$0.spotlightContentDescription(includeLaterPrompts: false).contains("distinctive later phrase")
+        })
+        await store.markIndexed(disabled)
+        #expect(await store.refresh(enabledAgents: both, includeLaterPrompts: false).isEmpty)
+    }
+
     @Test func displayTitlePriorities() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "索引里的标题")

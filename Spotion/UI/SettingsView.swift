@@ -168,11 +168,22 @@ private struct AdvancedSettingsTab: View {
 
 private struct IndexSettingsTab: View {
     private var state = AppCoordinator.shared.uiState
+    @State private var searchLaterPrompts = SpotionSettings.searchLaterPrompts
     @State private var checkTerm = ""
     @State private var checkResult: String?
 
     var body: some View {
         Form {
+            Section("Search") {
+                Toggle("Search later prompts", isOn: $searchLaterPrompts)
+                    .onChange(of: searchLaterPrompts) {
+                        SpotionSettings.searchLaterPrompts = searchLaterPrompts
+                        Task { await AppCoordinator.shared.refreshAndApply() }
+                    }
+                Text("Off by default. When enabled, up to five recent user prompts per session are stored only in the local macOS Spotlight index. Assistant, tool, thinking, command-wrapper, sidechain, and attachment content is excluded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("状态") {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
                 LabeledContent("Claude Code 会话", value: "\(state.claudeCount)")

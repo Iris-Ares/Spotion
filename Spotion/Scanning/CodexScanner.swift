@@ -74,7 +74,7 @@ struct CodexScanner: SessionScanner {
     /// expands on demand when a fixed window would truncate it.
     private static let maxHeadCap = 4 * 1024 * 1024
 
-    func parse(_ file: ScannedFile) -> ParseOutcome {
+    func parse(_ file: ScannedFile, includeLaterPrompts: Bool) -> ParseOutcome {
         var cap = 512 * 1024
         var best: SessionRecord?
         while true {
@@ -90,9 +90,12 @@ struct CodexScanner: SessionScanner {
             // giant injected line (response_item etc.) can push session_meta or
             // the first user_message past the current window. At the 4MB cap /
             // file end, accept what we have (no prompt → project-name title).
-            if let record = best, record.firstPrompt != nil { return .record(record) }
+            if let record = best, record.firstPrompt != nil {
+                return addingLaterPrompts(to: record, file: file, enabled: includeLaterPrompts)
+            }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
-                return best.map { .record($0) } ?? .unusable
+                guard let best else { return .unusable }
+                return addingLaterPrompts(to: best, file: file, enabled: includeLaterPrompts)
             }
             cap *= 2
         }
@@ -134,6 +137,7 @@ struct CodexScanner: SessionScanner {
             sessionID: sessionID,
             fallbackTitle: nil,
             firstPrompt: firstPrompt,
+            laterPromptSnippets: [],
             cwd: cwd,
             projectName: (cwd as NSString).lastPathComponent,
             gitBranch: nil,
@@ -142,6 +146,30 @@ struct CodexScanner: SessionScanner {
             filePath: file.path,
             fileSize: file.size
         ))
+    }
+
+    private func addingLaterPrompts(
+        to record: SessionRecord,
+        file: ScannedFile,
+        enabled: Bool
+    ) -> ParseOutcome {
+        guard enabled else { return .record(record) }
+        guard let lines = try? JSONLReader.tailLines(
+            of: URL(fileURLWithPath: file.path), cap: PromptSnippetPolicy.tailReadCap
+        ) else { return .ioFailure }
+
+        let decoder = JSONDecoder()
+        let prompts = lines.compactMap { data -> String? in
+            guard let event = try? decoder.decode(EventLine.self, from: data),
+                  event.payload.type == "user_message",
+                  let message = event.payload.message,
+                  PromptSnippetPolicy.isRealPrompt(message) else { return nil }
+            return message
+        }
+        var updated = record
+        updated.laterPromptSnippets = PromptSnippetPolicy.mostRecent(
+            prompts, excluding: record.firstPrompt)
+        return .record(updated)
     }
 
     /// rollout-2026-08-05T14-16-25-<uuid>.jsonl → last 36 characters of the stem.

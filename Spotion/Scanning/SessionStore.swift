@@ -100,10 +100,70 @@ actor SessionStore {
     /// from the map are not checked.
     func refresh(
         enabledAgents: Set<AgentKind>,
-        iconSources: [AgentKind: String] = [:]
+        iconSources: [AgentKind: String] = [:],
+        includeLaterPrompts: Bool = false
     ) async -> SessionDiff {
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
+        var hydratedPromptPaths = Set<String>()
+
+        if cache.searchLaterPromptsEnabled != includeLaterPrompts {
+            cache.searchLaterPromptsEnabled = includeLaterPrompts
+            if includeLaterPrompts {
+                // Queue every unchanged cached transcript for one bounded tail
+                // reparse; successful parses remove their own path below.
+                cache.laterPromptPendingPaths = Set(cache.entries.keys)
+            } else {
+                // Privacy fail-safe: purge cached snippets immediately. The
+                // entity layer also ignores them while disabled.
+                cache.laterPromptPendingPaths = []
+                for path in Array(cache.entries.keys) {
+                    guard var record = cache.entries[path]?.record,
+                          !record.laterPromptSnippets.isEmpty else { continue }
+                    record.laterPromptSnippets = []
+                    cache.entries[path]?.record = record
+                    changedIDs.insert(record.id)
+                }
+            }
+        }
+
+        // Resolve metadata-only re-donation triggers before file enumeration,
+        // so opt-in prompt snippets (which are deliberately not persisted in
+        // the scan cache) can be rehydrated in the same refresh.
+        if enabledAgents.contains(.codex), let codexScanner,
+           let newTitles = codexScanner.loadTitleIndex() {
+            var affected = Set<String>()
+            for (sessionID, name) in newTitles where cache.codexTitles[sessionID] != name {
+                affected.insert(sessionID)
+            }
+            for sessionID in cache.codexTitles.keys where newTitles[sessionID] == nil {
+                affected.insert(sessionID)
+            }
+            for sessionID in affected {
+                let id = SessionRecord.makeID(agent: .codex, sessionID: sessionID)
+                if records[id] != nil { changedIDs.insert(id) }
+            }
+            cache.codexTitles = newTitles
+        }
+
+        for (agent, fingerprint) in iconSources
+        where cache.iconSources[agent.rawValue] != fingerprint {
+            cache.iconSources[agent.rawValue] = fingerprint
+            for record in records.values where record.agent == agent {
+                changedIDs.insert(record.id)
+            }
+        }
+
+        if includeLaterPrompts {
+            let needsHydration = cache.dirtyIDs
+                .union(changedIDs)
+                .union(Set(records.keys).subtracting(cache.indexedIDs))
+            for (path, entry) in cache.entries {
+                if let id = entry.record?.id, needsHydration.contains(id) {
+                    cache.laterPromptPendingPaths.insert(path)
+                }
+            }
+        }
 
         struct RootState {
             var path: String
@@ -138,7 +198,9 @@ actor SessionStore {
 
             for file in files {
                 seenPaths.insert(file.path)
-                if let entry = cache.entries[file.path], entry.mtime == file.mtime, entry.size == file.size {
+                if let entry = cache.entries[file.path],
+                   entry.mtime == file.mtime, entry.size == file.size,
+                   !cache.laterPromptPendingPaths.contains(file.path) {
                     continue
                 }
                 toParse.append((scanner, file))
@@ -148,7 +210,7 @@ actor SessionStore {
         // Parse changed files in parallel (pure value functions, I/O bound)
         let parsed = await withTaskGroup(of: (ScannedFile, ParseOutcome).self) { group in
             for (scanner, file) in toParse {
-                group.addTask { (file, scanner.parse(file)) }
+                group.addTask { (file, scanner.parse(file, includeLaterPrompts: includeLaterPrompts)) }
             }
             var results: [(ScannedFile, ParseOutcome)] = []
             for await item in group { results.append(item) }
@@ -160,6 +222,8 @@ actor SessionStore {
             // the file is readable again — caching nil here would evict the
             // session and never retry (the new mtime would match forever).
             if case .ioFailure = outcome { continue }
+            cache.laterPromptPendingPaths.remove(file.path)
+            if includeLaterPrompts { hydratedPromptPaths.insert(file.path) }
             var record = outcome.record
             // Claude desktop's claude://resume import rewrites the transcript
             // in place with the tail title records stripped. Same path + same
@@ -199,45 +263,21 @@ actor SessionStore {
                 // gone it flows into deletedIDs instead.
                 changedIDs.insert(removed.id)
             }
+            cache.laterPromptPendingPaths.remove(path)
         }
 
         // Rebuild uniformly from entries (handles winner selection among
         // multiple files sharing a session_id, and deletion fallback).
         rebuildRecords()
 
-        // Codex title index: changes only trigger re-donation, never a rollout
-        // re-read. Compare both directions — besides new/renamed entries, a
-        // cleared title or a vanished entry (present before, absent now) must
-        // also re-donate, or Spotlight keeps the stale title until the rollout
-        // file itself changes.
-        // loadTitleIndex() == nil means the read failed: keep the cached titles
-        // and skip the diff this cycle, so an I/O blip is not mistaken for
-        // "all titles cleared" and a mass downgrade re-donation.
-        if enabledAgents.contains(.codex), let codexScanner,
-           let newTitles = codexScanner.loadTitleIndex() {
-            var affected = Set<String>()
-            for (sessionID, name) in newTitles where cache.codexTitles[sessionID] != name {
-                affected.insert(sessionID)
-            }
-            for sessionID in cache.codexTitles.keys where newTitles[sessionID] == nil {
-                affected.insert(sessionID)
-            }
-            for sessionID in affected {
-                let id = SessionRecord.makeID(agent: .codex, sessionID: sessionID)
-                if records[id] != nil { changedIDs.insert(id) }
-            }
-            cache.codexTitles = newTitles
-        }
-
-        // Icon-source drift: fold the whole agent into changedIDs, then update
-        // the stored fingerprint immediately — from here the re-donation
-        // obligation lives in dirtyIDs, which markIndexed alone clears, so a
-        // failed donation still retries even though the fingerprint matches.
-        for (agent, fingerprint) in iconSources
-        where cache.iconSources[agent.rawValue] != fingerprint {
-            cache.iconSources[agent.rawValue] = fingerprint
-            for record in records.values where record.agent == agent {
-                changedIDs.insert(record.id)
+        // A deleted/corrupted winning rollout may reveal an unchanged fallback
+        // record that was decoded without private prompt text. Defer that
+        // upsert one cycle and queue its winning path for bounded hydration.
+        if includeLaterPrompts {
+            for id in changedIDs {
+                guard let record = records[id],
+                      !hydratedPromptPaths.contains(record.filePath) else { continue }
+                cache.laterPromptPendingPaths.insert(record.filePath)
             }
         }
 
@@ -246,8 +286,13 @@ actor SessionStore {
         // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
         cache.dirtyIDs.formIntersection(currentIDs)
+        let upsertIDs = cache.dirtyIDs.union(currentIDs.subtracting(cache.indexedIDs))
+        let promptHydrationBlockedIDs = includeLaterPrompts ? Set(upsertIDs.filter {
+            guard let path = records[$0]?.filePath else { return false }
+            return cache.laterPromptPendingPaths.contains(path)
+        }) : []
         let diff = SessionDiff(
-            upserts: cache.dirtyIDs.union(currentIDs.subtracting(cache.indexedIDs)).compactMap { records[$0] },
+            upserts: upsertIDs.subtracting(promptHydrationBlockedIDs).compactMap { records[$0] },
             deletedIDs: Array(cache.indexedIDs.subtracting(currentIDs))
         )
 

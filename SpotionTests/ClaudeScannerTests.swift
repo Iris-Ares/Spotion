@@ -19,6 +19,13 @@ import Testing
         return "{\"type\":\"assistant\",\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp/proj\",\"timestamp\":\"2026-08-05T10:00:02.000Z\",\"isSidechain\":false,\"message\":{\"role\":\"assistant\",\"content\":\"\(text)\"}}"
     }
 
+    static func userWithRole(_ content: String, role: String) -> String {
+        "{\"type\":\"user\",\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp/proj\",\"timestamp\":\"2026-08-05T10:00:01.000Z\",\"isSidechain\":false,\"message\":{\"role\":\"\(role)\",\"content\":\"\(content)\"}}"
+    }
+
+    static let attachmentOnlyUser =
+        "{\"type\":\"user\",\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp/proj\",\"timestamp\":\"2026-08-05T10:00:01.000Z\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"source\":{\"data\":\"SECRET_ATTACHMENT\"}},{\"type\":\"tool_result\",\"text\":\"SECRET_TOOL\"}]}}"
+
     static func customTitle(_ t: String) -> String {
         "{\"type\":\"custom-title\",\"customTitle\":\"\(t)\",\"sessionId\":\"\(uuid)\"}"
     }
@@ -52,6 +59,46 @@ import Testing
         #expect(record.cwd == "/tmp/proj")
         #expect(record.gitBranch == "main")
         #expect(record.firstPrompt == "帮我写个脚本")
+        #expect(record.laterPromptSnippets.isEmpty)
+    }
+
+    @Test func optInExtractsOnlyRecentRealUserPrompts() throws {
+        let home = try makeHome(lines: [
+            Self.queueOp,
+            Self.user("first prompt"),
+            Self.user("sidechain secret", sidechain: true),
+            Self.user("<command-name>/clear</command-name>"),
+            Self.user("Caveat: injected context"),
+            Self.userWithRole("SECRET_ASSISTANT_ROLE", role: "assistant"),
+            Self.attachmentOnlyUser,
+            Self.userWithBlocks,
+            Self.user("  later   claude   prompt  "),
+            "MALFORMED TAIL LINE",
+        ])
+        let scanner = ClaudeScanner(claudeHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
+
+        #expect(record.laterPromptSnippets == ["later claude prompt", "块一"])
+        let donated = record.laterPromptSnippets.joined(separator: "\n")
+        #expect(!donated.contains("SECRET_"))
+        #expect(!donated.contains("sidechain"))
+        #expect(!donated.contains("command-name"))
+    }
+
+    @Test func oversizedTailRecordDoesNotExpandPastBound() throws {
+        let giant = Self.assistantFiller(PromptSnippetPolicy.tailReadCap + 1_024)
+        let home = try makeHome(lines: [
+            Self.user("first prompt"),
+            Self.user("outside bounded tail"),
+            giant,
+            Self.user("inside bounded tail"),
+        ])
+        let scanner = ClaudeScanner(claudeHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
+
+        #expect(record.laterPromptSnippets == ["inside bounded tail"])
     }
 
     @Test func skipsSidechainCommandAndCaveatPrompts() throws {

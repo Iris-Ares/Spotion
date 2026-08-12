@@ -101,7 +101,7 @@ struct ClaudeScanner: SessionScanner {
     /// unusable.
     private static let maxHeadCap = 4 * 1024 * 1024
 
-    func parse(_ file: ScannedFile) -> ParseOutcome {
+    func parse(_ file: ScannedFile, includeLaterPrompts: Bool) -> ParseOutcome {
         var cap = 256 * 1024
         var best: SessionRecord?
         while true {
@@ -118,9 +118,12 @@ struct ClaudeScanner: SessionScanner {
             // past the window (filtered command/caveat records followed by a
             // large assistant record). At the 4MB cap / file end, accept what
             // we have (no prompt → tail-title / project-name fallback).
-            if let record = best, record.firstPrompt != nil { return .record(record) }
+            if let record = best, record.firstPrompt != nil {
+                return addingLaterPrompts(to: record, file: file, enabled: includeLaterPrompts)
+            }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
-                return best.map { .record($0) } ?? .unusable
+                guard let best else { return .unusable }
+                return addingLaterPrompts(to: best, file: file, enabled: includeLaterPrompts)
             }
             cap *= 2
         }
@@ -142,8 +145,9 @@ struct ClaudeScanner: SessionScanner {
             if gitBranch == nil, let b = e.gitBranch, !b.isEmpty { gitBranch = b }
             if startedAt == nil, let t = e.timestamp { startedAt = ISO8601.date(from: t) }
             if firstPrompt == nil, e.type == "user", e.isSidechain != true,
+               e.message?.role == "user",
                let text = e.message?.content?.plainText.trimmingCharacters(in: .whitespacesAndNewlines),
-               !text.isEmpty, Self.looksLikeRealPrompt(text) {
+               PromptSnippetPolicy.isRealPrompt(text) {
                 firstPrompt = String(text.prefix(300))
             }
             if cwd != nil, startedAt != nil, firstPrompt != nil { break }
@@ -162,6 +166,7 @@ struct ClaudeScanner: SessionScanner {
             sessionID: sessionID,
             fallbackTitle: titles.custom ?? titles.ai ?? titles.lastPrompt,
             firstPrompt: firstPrompt,
+            laterPromptSnippets: [],
             cwd: cwd,
             projectName: (cwd as NSString).lastPathComponent,
             gitBranch: gitBranch,
@@ -172,10 +177,36 @@ struct ClaudeScanner: SessionScanner {
         ))
     }
 
+    private func addingLaterPrompts(
+        to record: SessionRecord,
+        file: ScannedFile,
+        enabled: Bool
+    ) -> ParseOutcome {
+        guard enabled else { return .record(record) }
+        guard let lines = try? JSONLReader.tailLines(
+            of: URL(fileURLWithPath: file.path), cap: PromptSnippetPolicy.tailReadCap
+        ) else { return .ioFailure }
+
+        let decoder = JSONDecoder()
+        let prompts = lines.compactMap { data -> String? in
+            guard let envelope = try? decoder.decode(Envelope.self, from: data),
+                  envelope.type == "user",
+                  envelope.isSidechain != true,
+                  envelope.message?.role == "user",
+                  let text = envelope.message?.content?.plainText,
+                  PromptSnippetPolicy.isRealPrompt(text) else { return nil }
+            return text
+        }
+        var updated = record
+        updated.laterPromptSnippets = PromptSnippetPolicy.mostRecent(
+            prompts, excluding: record.firstPrompt)
+        return .record(updated)
+    }
+
     /// Excludes slash-command wrappers (<command-name>…) and the caveat notes
     /// Claude Code injects.
     static func looksLikeRealPrompt(_ text: String) -> Bool {
-        !text.hasPrefix("<") && !text.hasPrefix("Caveat:")
+        PromptSnippetPolicy.isRealPrompt(text)
     }
 
     /// Tail scan starting at 64KB, doubling up to 512KB.

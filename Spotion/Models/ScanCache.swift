@@ -9,8 +9,9 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
-    /// v5: iconSources; v4: pendingGhostDeletions; v3: dirtyIDs; v2: head expansion
-    static let currentVersion = 5
+    /// v6: later prompt preference and hydration state; v5: iconSources;
+    /// v4: pendingGhostDeletions; v3: dirtyIDs; v2: head expansion
+    static let currentVersion = 6
 
     var version: Int = currentVersion
     /// key = absolute session file path
@@ -33,4 +34,10 @@ struct ScanCache: Codable, Sendable {
     /// installing/removing/replacing that app must re-donate every session of
     /// the agent even though the session files are unchanged)
     var iconSources: [String: String] = [:]
+    /// Preference fingerprint used to force exactly one reparse/re-donation
+    /// when opt-in later-prompt indexing changes.
+    var searchLaterPromptsEnabled = false
+    /// Unchanged transcript paths still awaiting the opt-in reparse. A failed
+    /// read or root enumeration leaves the path here for a later retry.
+    var laterPromptPendingPaths: Set<String> = []
 }
