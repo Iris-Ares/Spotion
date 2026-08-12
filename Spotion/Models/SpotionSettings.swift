@@ -84,6 +84,12 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "defaultNewSessionDir") }
     }
 
+    /// Privacy-sensitive Spotlight metadata. Missing preference means off.
+    static var searchLaterPrompts: Bool {
+        get { d.bool(forKey: "searchLaterPrompts") }
+        set { d.set(newValue, forKey: "searchLaterPrompts") }
+    }
+
     private static func nonEmpty(_ s: String?) -> String? {
         guard let s, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return s

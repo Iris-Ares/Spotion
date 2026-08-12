@@ -11,6 +11,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var cwd: String
     var agent: AgentKind
     var firstPromptSnippet: String?
+    var laterPromptSnippets: [String]
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
@@ -23,6 +24,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.cwd = record.cwd
         self.agent = record.agent
         self.firstPromptSnippet = record.firstPrompt
+        self.laterPromptSnippets = record.laterPromptSnippets
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
@@ -48,9 +50,12 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var attributeSet: CSSearchableItemAttributeSet {
         let attributes = CSSearchableItemAttributeSet(contentType: .content)
         attributes.title = title
-        attributes.contentDescription = [firstPromptSnippet, cwd]
-            .compactMap { $0 }
-            .joined(separator: "\n")
+        attributes.contentDescription = SessionRecord.spotlightContentDescription(
+            firstPrompt: firstPromptSnippet,
+            laterPrompts: laterPromptSnippets,
+            cwd: cwd,
+            includeLaterPrompts: SpotionSettings.searchLaterPrompts
+        )
         var keywords = [projectName, agent.displayName, agent.rawValue, "session"]
         if let gitBranch { keywords.append(gitBranch) }
         keywords += cwd.split(separator: "/").map(String.init)

@@ -17,6 +17,10 @@ import Testing
         "{\"timestamp\":\"2026-08-05T10:08:54.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"\(text)\"}}"
     }
 
+    static func userMessageWithAttachment(_ text: String) -> String {
+        "{\"timestamp\":\"2026-08-05T10:08:54.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"\(text)\",\"images\":[\"SECRET_ATTACHMENT_PAYLOAD\"]}}"
+    }
+
     static let responseItemUser =
         "{\"timestamp\":\"2026-08-05T10:08:55.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"CONTEXT INJECTION\"}]}}"
 
@@ -42,6 +46,74 @@ import Testing
         #expect(record.projectName == "proj")
         #expect(record.firstPrompt == "修复登录 bug")
         #expect(record.startedAt != nil)
+        #expect(record.laterPromptSnippets.isEmpty)
+    }
+
+    @Test func optInExtractsOnlyRecentRealUserPrompts() throws {
+        let assistant =
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"SECRET_ASSISTANT\"}]}}"
+        let thinking =
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"summary\":[{\"text\":\"SECRET_THINKING\"}]}}"
+        let tool =
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"output\":\"SECRET_TOOL\"}}"
+        let home = try makeHome(sessionLines: [
+            Self.meta(),
+            Self.userMessage("first prompt"),
+            Self.responseItemUser,
+            assistant,
+            thinking,
+            tool,
+            Self.userMessage("<command-name>/review</command-name>"),
+            Self.userMessage("  later   prompt   one  "),
+            Self.userMessageWithAttachment("later prompt two"),
+            "MALFORMED TAIL LINE",
+        ])
+        let scanner = CodexScanner(codexHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
+
+        #expect(record.laterPromptSnippets == ["later prompt two", "later prompt one"])
+        let donated = record.laterPromptSnippets.joined(separator: "\n")
+        #expect(!donated.contains("SECRET_"))
+        #expect(!donated.contains("command-name"))
+    }
+
+    @Test func laterPromptLimitsDuplicatesAndOversizedBoundaryRecords() throws {
+        let giant = String(repeating: "Z", count: PromptSnippetPolicy.tailReadCap + 1_024)
+        let home = try makeHome(sessionLines: [
+            Self.meta(),
+            Self.userMessage("first prompt"),
+            Self.userMessage(giant),
+            "NOT JSON",
+            Self.userMessage("duplicate"),
+            Self.userMessage("duplicate"),
+            Self.userMessage(String(repeating: "A", count: 400)),
+            Self.userMessage(String(repeating: "B", count: 400)),
+            Self.userMessage(String(repeating: "C", count: 400)),
+            Self.userMessage(String(repeating: "D", count: 400)),
+            Self.userMessage(String(repeating: "E", count: 400)),
+            Self.userMessage("newest"),
+        ])
+        let scanner = CodexScanner(codexHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
+
+        #expect(record.laterPromptSnippets.count == 5)
+        #expect(record.laterPromptSnippets.first == "newest")
+        #expect(record.laterPromptSnippets.allSatisfy { $0.count <= 300 })
+        #expect(record.laterPromptSnippets.joined(separator: "\n").count <= 1_500)
+        #expect(!record.laterPromptSnippets.contains("duplicate"))
+    }
+
+    @Test func disabledContentDescriptionExcludesCachedLaterPrompts() throws {
+        let home = try makeHome(sessionLines: [Self.meta(), Self.userMessage("first")])
+        var record = try firstRecord(home: home)
+        record.laterPromptSnippets = ["distinctive later phrase"]
+
+        let disabled = record.spotlightContentDescription(includeLaterPrompts: false)
+        let enabled = record.spotlightContentDescription(includeLaterPrompts: true)
+        #expect(!disabled.contains("distinctive later phrase"))
+        #expect(enabled.contains("distinctive later phrase"))
     }
 
     @Test func promptBeyondFirstWindowIsFoundByExpansion() throws {

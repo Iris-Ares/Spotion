@@ -229,7 +229,11 @@ final class AppCoordinator {
         let iconSources = Dictionary(uniqueKeysWithValues: enabled.map {
             ($0, AgentIconProvider.shared.sourceFingerprint(for: $0))
         })
-        let diff = await store.refresh(enabledAgents: enabled, iconSources: iconSources)
+        let diff = await store.refresh(
+            enabledAgents: enabled,
+            iconSources: iconSources,
+            includeLaterPrompts: SpotionSettings.searchLaterPrompts
+        )
         do {
             if !diff.upserts.isEmpty {
                 let titled = await store.titled(records: diff.upserts)
