@@ -115,11 +115,13 @@ actor SessionStore {
                 cache.laterPromptPendingPaths = Set(cache.entries.keys)
             } else {
                 // Privacy fail-safe: purge cached snippets immediately. The
-                // entity layer also ignores them while disabled.
+                // entity layer also ignores them while disabled. Mark every
+                // record changed even when a relaunch already discarded its
+                // transient snippets, so Spotlight overwrites previously
+                // donated private text.
                 cache.laterPromptPendingPaths = []
                 for path in Array(cache.entries.keys) {
-                    guard var record = cache.entries[path]?.record,
-                          !record.laterPromptSnippets.isEmpty else { continue }
+                    guard var record = cache.entries[path]?.record else { continue }
                     record.laterPromptSnippets = []
                     cache.entries[path]?.record = record
                     changedIDs.insert(record.id)

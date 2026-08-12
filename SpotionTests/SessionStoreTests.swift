@@ -189,6 +189,36 @@ import Testing
         #expect(await store.refresh(enabledAgents: both, includeLaterPrompts: false).isEmpty)
     }
 
+    @Test func disablingLaterPromptSearchAfterRelaunchRedonatesCachedSessions() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("first prompt"),
+                CodexScannerTests.userMessage("private later phrase"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeLaterPrompts: false)
+        await store.markIndexed(initial)
+        let enabled = await store.refresh(enabledAgents: both, includeLaterPrompts: true)
+        #expect(enabled.upserts.count == 1)
+        await store.markIndexed(enabled)
+
+        // Prompt snippets are intentionally absent from the persisted cache,
+        // but disabling after relaunch must still overwrite Spotlight metadata.
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let disabled = await relaunched.refresh(enabledAgents: both, includeLaterPrompts: false)
+        #expect(disabled.upserts.count == 1)
+        #expect(disabled.upserts.allSatisfy { $0.laterPromptSnippets.isEmpty })
+        #expect(disabled.upserts.allSatisfy {
+            !$0.spotlightContentDescription(includeLaterPrompts: false).contains("private later phrase")
+        })
+    }
+
     @Test func displayTitlePriorities() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "索引里的标题")
