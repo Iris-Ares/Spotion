@@ -112,3 +112,48 @@ jobs:
             --generate-notes \
             "dist/Spotion-$VERSION.zip" "dist/appcast.xml" "dist/SHA256SUMS.txt"
           gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      # Serves `brew install --cask Iris-Ares/tap/spotion`. Runs last, after the
+      # release is public, so the download URL the cask points at already
+      # resolves. Failing here leaves a published release with a stale cask —
+      # loud on purpose, and safe to fix by re-running the job.
+      # Needs the TAP_PUSH_TOKEN secret; see docs/RELEASING.md §"Homebrew tap".
+      - name: Bump Homebrew cask
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+        run: |
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "::error::TAP_PUSH_TOKEN is not set — release published, Homebrew cask NOT bumped."
+            exit 1
+          fi
+
+          # Reuse the published checksum rather than recomputing, so the cask and
+          # SHA256SUMS.txt can never disagree.
+          SHA256=$(awk -v f="Spotion-$VERSION.zip" '$2 == f { print $1 }' dist/SHA256SUMS.txt)
+          if [[ ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::No usable SHA-256 for Spotion-$VERSION.zip in dist/SHA256SUMS.txt"
+            exit 1
+          fi
+
+          git clone --depth 1 https://github.com/Iris-Ares/homebrew-tap.git tap
+          cd tap
+          sed -i '' -E \
+            -e "s|^  version \".*\"$|  version \"$VERSION\"|" \
+            -e "s|^  sha256 \".*\"$|  sha256 \"$SHA256\"|" \
+            Casks/spotion.rb
+
+          # A no-op sed (cask reformatted upstream) would silently ship the old
+          # version, so assert both lines landed instead of trusting the rewrite.
+          grep -qx "  version \"$VERSION\"" Casks/spotion.rb || { echo "::error::cask version rewrite failed"; exit 1; }
+          grep -qx "  sha256 \"$SHA256\"" Casks/spotion.rb || { echo "::error::cask sha256 rewrite failed"; exit 1; }
+
+          if git diff --quiet; then
+            echo "Cask already at $VERSION — nothing to push."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "spotion $VERSION"
+          # Token appears only in this URL; Actions masks secrets in logs.
+          git push "https://x-access-token:$TAP_TOKEN@github.com/Iris-Ares/homebrew-tap.git" HEAD:main

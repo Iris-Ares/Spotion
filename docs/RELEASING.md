@@ -42,6 +42,33 @@
   problem, and re-run the job from the Actions UI (same tag) or push the next
   patch tag.
 
+## Homebrew tap
+
+- [Iris-Ares/homebrew-tap](https://github.com/Iris-Ares/homebrew-tap) serves
+  `brew install --cask Iris-Ares/tap/spotion`. The release workflow's last step
+  rewrites `version` + `sha256` in `Casks/spotion.rb` and pushes straight to that
+  repo's `main` — so **don't put a PR requirement on the tap's `main`**, and don't
+  hand-edit those two lines (they get overwritten).
+- The step runs *after* the release is published, so the versioned download URL it
+  writes already resolves. If it fails, the release is out but the cask is stale:
+  fix and re-run the job (it's idempotent — a cask already at that version is a
+  no-op).
+- `sha256` is read out of `dist/SHA256SUMS.txt` rather than recomputed, so the cask
+  and the published checksum can't drift apart.
+- **`TAP_PUSH_TOKEN` secret** — `GITHUB_TOKEN` can't write to another repository, so
+  this needs a fine-grained PAT: *Settings → Developer settings → Personal access
+  tokens → Fine-grained*, **Resource owner** `Iris-Ares`, **Only select
+  repositories** → `homebrew-tap`, **Repository permissions → Contents: Read and
+  write**, nothing else. Add it to the Spotion repo as `TAP_PUSH_TOKEN`
+  (*Settings → Secrets and variables → Actions*). Fine-grained tokens expire —
+  a release failing at "Bump Homebrew cask" with a 403 usually just means it lapsed.
+- The tap has its own CI (`brew style` + `brew audit --cask --online`) on every push,
+  which re-downloads the asset — a wrong checksum fails there rather than on a user's
+  machine. Watch that run after cutting a release.
+- Cask stanzas other than `version`/`sha256` are maintained in the tap repo. Note
+  `auto_updates true`: it tells Homebrew that Sparkle owns updates, so `brew upgrade`
+  steps in only when the installed bundle has actually fallen behind the cask.
+
 ## EdDSA update-signing keys
 
 - **Private key** lives in exactly two places: the release engineer's login
@@ -75,7 +102,13 @@
    then `xcrun stapler staple` the `.app` **before** the `ditto` ZIP step.
 5. Keep EdDSA signing regardless — Sparkle best practice even for notarized
    apps.
-6. Shrink the README install section (the Gatekeeper friction disappears).
+6. Shrink the README install section (the Gatekeeper friction disappears), and drop
+   the Gatekeeper caveat from the tap's README.
+7. Only then is `homebrew/cask` itself worth attempting — it requires every cask to
+   pass Gatekeeper checks (`brew audit --new` runs `gktool scan`, which an ad-hoc
+   signature fails). The other gate is notability: 90 forks / 90 watchers /
+   225 stars for a submission by the repo owner. Until both hold, the self-hosted
+   tap is the whole story.
 
 ## Repo protection
 

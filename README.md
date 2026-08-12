@@ -30,21 +30,41 @@ You run [Codex CLI](https://developers.openai.com/codex/cli) and [Claude Code](h
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install --cask Iris-Ares/tap/spotion
+```
+
+That taps [Iris-Ares/homebrew-tap](https://github.com/Iris-Ares/homebrew-tap), trusts the
+cask and installs to `/Applications` in one step. Keep the name fully qualified for the
+first install — Homebrew refuses to resolve a bare `spotion` from a tap it hasn't been
+told to trust. Afterwards the short name works everywhere (`brew upgrade spotion`,
+`brew uninstall --cask spotion`).
+
+Already running a copy from a manual download or `make install`? Add `--adopt` and
+Homebrew takes over the existing `/Applications/Spotion.app` instead of refusing.
+
+### Manual
+
 1. Download `Spotion-X.Y.Z.zip` from the [latest release](https://github.com/Iris-Ares/Spotion/releases/latest), unzip it.
 2. **Drag `Spotion.app` into `/Applications` before the first launch.** (Launching from the
-   Downloads folder triggers App Translocation, which also breaks in-app updating.)
-3. First launch is blocked by Gatekeeper — builds are not yet Developer-ID signed or
-   notarized (no paid Apple Developer membership). Open **System Settings → Privacy &
-   Security**, scroll to the *"Spotion.app" was blocked* notice, click **Open Anyway** and
-   confirm. On macOS 26 the old right-click → Open shortcut no longer bypasses this.
-   Terminal alternative:
-
-   ```bash
-   xattr -d com.apple.quarantine /Applications/Spotion.app
-   ```
-
-4. Cautious? Each release ships a `SHA256SUMS.txt` — verify with
+   Downloads folder triggers App Translocation, which also breaks in-app updating.
+   Homebrew avoids this by installing straight to `/Applications`.)
+3. Cautious? Each release ships a `SHA256SUMS.txt` — verify with
    `shasum -a 256 -c SHA256SUMS.txt` next to the downloaded ZIP.
+
+### Then: let it through Gatekeeper
+
+Either way, the **first** launch is blocked — builds are not yet Developer-ID signed or
+notarized (no paid Apple Developer membership), and Homebrew always quarantines cask
+downloads. Open **System Settings → Privacy & Security**, scroll to the *"Spotion.app" was
+blocked* notice, click **Open Anyway** and confirm. On macOS 26 the old right-click → Open
+shortcut no longer bypasses this. Terminal alternative:
+
+```bash
+xattr -d com.apple.quarantine /Applications/Spotion.app
+```
 
 This friction is **first install only**: in-app updates installed by Sparkle are not
 quarantined and won't re-trigger Gatekeeper. One known limitation of ad-hoc signing: macOS
@@ -59,15 +79,18 @@ dropdown with a one-click install (download / verify / relaunch handled by
 [Sparkle](https://sparkle-project.org), updates EdDSA-signed). Manual check: menu bar →
 *Check for Updates…*. Release process and rollback: [docs/RELEASING.md](docs/RELEASING.md).
 
+Homebrew installs stay out of Sparkle's way — the cask is marked `auto_updates true`, so
+`brew upgrade` only steps in if the installed app has actually fallen behind.
+
 ## Requirements
 
 - **macOS 26 (Tahoe) or later** — Spotion is built on macOS 26's Spotlight Actions and App Intents indexing.
 - At least one agent CLI whose sessions you want to index: [Codex CLI](https://developers.openai.com/codex/cli) and/or [Claude Code](https://code.claude.com).
 - Optional: [Ghostty](https://ghostty.org) as the launch terminal, and/or the [Claude](https://claude.ai/download) / [ChatGPT](https://chatgpt.com/download) desktop apps as launch targets.
 
-## Install
+## Build from source
 
-Pre-built releases are not published yet ([#5](https://github.com/Iris-Ares/Spotion/issues/5) tracks GitHub Releases with in-app update notifications). Until then, building from source takes about a minute:
+Takes about a minute:
 
 ```bash
 git clone https://github.com/Iris-Ares/Spotion.git
