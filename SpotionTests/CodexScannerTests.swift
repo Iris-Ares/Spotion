@@ -116,6 +116,48 @@ import Testing
         #expect(enabled.contains("distinctive later phrase"))
     }
 
+    @Test func parsesNestedGitBranchMetadata() throws {
+        let home = try makeHome(sessionLines: [
+            Self.meta(extra: ",\"git\":{\"branch\":\"codex/issue-13\",\"commit_hash\":\"abc123\"}"),
+            Self.userMessage("find this session by branch"),
+        ])
+        let record = try firstRecord(home: home)
+        #expect(record.gitBranch == "codex/issue-13")
+    }
+
+    @Test func optionalGitMetadataDegradesSafely() throws {
+        let cases: [(extra: String, expected: String?)] = [
+            ("", nil),
+            (",\"git\":{\"branch\":\"   \"}", nil),
+            (",\"git\":\"malformed\"", nil),
+            (",\"git\":{\"branch\":42}", nil),
+            (",\"git\":{\"detached\":true,\"future_field\":{}}", nil),
+        ]
+
+        for item in cases {
+            let home = try makeHome(sessionLines: [
+                Self.meta(extra: item.extra),
+                Self.userMessage("session remains valid"),
+            ])
+            let record = try firstRecord(home: home)
+            #expect(record.gitBranch == item.expected)
+            #expect(record.firstPrompt == "session remains valid")
+        }
+    }
+
+    @Test func spotlightKeywordsIncludeBranchWithoutDuplicates() throws {
+        let home = try makeHome(sessionLines: [
+            Self.meta(extra: ",\"git\":{\"branch\":\"proj\"}"),
+            Self.userMessage("keyword fixture"),
+        ])
+        let record = try firstRecord(home: home)
+        let keywords = record.spotlightKeywords
+
+        #expect(keywords.filter { $0 == "proj" }.count == 1)
+        #expect(record.projectName == "proj")
+        #expect(record.firstPrompt == "keyword fixture")
+    }
+
     @Test func promptBeyondFirstWindowIsFoundByExpansion() throws {
         // meta fits the initial 512KB window, but a giant response_item pushes
         // the first user_message past it: expansion must continue until the

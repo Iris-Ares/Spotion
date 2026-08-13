@@ -116,6 +116,30 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         parts.append(cwd)
         return parts.compactMap { $0 }.joined(separator: "\n")
     }
+
+    /// Search-only metadata kept separate from the entity's visible title and
+    /// subtitle. Preserve insertion order while removing exact duplicates.
+    var spotlightKeywords: [String] {
+        Self.spotlightKeywords(
+            projectName: projectName,
+            agent: agent,
+            gitBranch: gitBranch,
+            cwd: cwd
+        )
+    }
+
+    static func spotlightKeywords(
+        projectName: String,
+        agent: AgentKind,
+        gitBranch: String?,
+        cwd: String
+    ) -> [String] {
+        var keywords = [projectName, agent.displayName, agent.rawValue, "session"]
+        if let gitBranch { keywords.append(gitBranch) }
+        keywords += cwd.split(separator: "/").map(String.init)
+        var seen = Set<String>()
+        return keywords.filter { seen.insert($0).inserted }
+    }
 }
 
 enum PromptSnippetPolicy {
