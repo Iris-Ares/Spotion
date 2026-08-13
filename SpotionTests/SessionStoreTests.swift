@@ -660,4 +660,28 @@ import Testing
         _ = await relaunched.refresh(enabledAgents: both)
         #expect(await relaunched.pinnedSessionIDs() == [id])
     }
+
+    @Test func corruptedPinStoreRedonatesStandardPriority() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.setPinned(id: id, pinned: true) == .changed)
+        let pinned = await store.refresh(enabledAgents: both)
+        await store.markIndexed(pinned)
+
+        let pinsURL = env.cacheURL.deletingLastPathComponent()
+            .appendingPathComponent("pinned-sessions-v1.json")
+        try TestSupport.write("not json", to: pinsURL)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let recovered = await relaunched.refresh(enabledAgents: both)
+        #expect(recovered.upserts.map(\.id) == [id])
+        #expect(await relaunched.titled(records: recovered.upserts).first?.isPinned == false)
+    }
 }

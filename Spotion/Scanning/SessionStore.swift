@@ -84,6 +84,13 @@ actor SessionStore {
         }
         cache = loaded
         rebuildRecords()
+        if pinnedStore.recoveredFromCorruption {
+            // Spotlight may still retain the higher priority donated from the
+            // unreadable payload. Re-donate cached records at standard priority
+            // so the index matches the safe empty-pin fallback.
+            cache.dirtyIDs.formUnion(records.keys)
+            persist()
+        }
     }
 
     /// Read and clear the full-rebuild flag (consumed once by the coordinator

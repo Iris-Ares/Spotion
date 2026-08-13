@@ -12,10 +12,12 @@ struct PinnedSessionStore: Sendable {
 
     let url: URL
     private(set) var sessionIDs: Set<String> = []
+    private(set) var recoveredFromCorruption = false
 
     mutating func bootstrap() {
         guard FileManager.default.fileExists(atPath: url.path) else {
             sessionIDs = []
+            recoveredFromCorruption = false
             return
         }
         guard let data = try? Data(contentsOf: url),
@@ -25,9 +27,11 @@ struct PinnedSessionStore: Sendable {
             // privacy. Recovering to an empty set is safer than inventing pins;
             // the next successful pin operation replaces the corrupt payload.
             sessionIDs = []
+            recoveredFromCorruption = true
             return
         }
         sessionIDs = Set(payload.sessionIDs)
+        recoveredFromCorruption = false
     }
 
     func contains(_ id: String) -> Bool {
@@ -47,6 +51,7 @@ struct PinnedSessionStore: Sendable {
         guard updated != sessionIDs else { return false }
         try persist(updated)
         sessionIDs = updated
+        recoveredFromCorruption = false
         return true
     }
 
@@ -58,6 +63,7 @@ struct PinnedSessionStore: Sendable {
         guard updated != sessionIDs else { return false }
         try persist(updated)
         sessionIDs = updated
+        recoveredFromCorruption = false
         return true
     }
 

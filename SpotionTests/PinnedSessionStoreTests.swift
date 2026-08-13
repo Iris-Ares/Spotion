@@ -26,8 +26,10 @@ import Testing
         var store = PinnedSessionStore(url: url)
         store.bootstrap()
         #expect(store.sessionIDs.isEmpty)
+        #expect(store.recoveredFromCorruption)
 
         #expect(try store.setPinned(true, id: "claude:recovered"))
+        #expect(!store.recoveredFromCorruption)
         var relaunched = PinnedSessionStore(url: url)
         relaunched.bootstrap()
         #expect(relaunched.sessionIDs == ["claude:recovered"])
