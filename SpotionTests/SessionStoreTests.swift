@@ -32,11 +32,15 @@ import Testing
             to: env.codexHome.appendingPathComponent("session_index.jsonl"))
     }
 
-    private func writeClaudeSession(_ env: Env, uuid: String = ClaudeScannerTests.uuid) throws {
+    private func writeClaudeSession(
+        _ env: Env,
+        uuid: String = ClaudeScannerTests.uuid,
+        title: String = "Claude 标题"
+    ) throws {
         try TestSupport.write(
             [
                 ClaudeScannerTests.user("claude prompt"),
-                ClaudeScannerTests.customTitle("Claude 标题"),
+                ClaudeScannerTests.customTitle(title),
             ].joined(separator: "\n") + "\n",
             to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(uuid).jsonl"))
     }
@@ -560,5 +564,107 @@ import Testing
 
         let d2 = await store.refresh(enabledAgents: [.codex])
         #expect(d2.deletedIDs == ["claude:\(ClaudeScannerTests.uuid)"])
+    }
+
+    @Test func aliasPrecedenceAndUpstreamTitleRemainsSearchable() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env, title: "Agent title")
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        #expect(try await store.setAlias(id: id, alias: "  Local   alias ") == .changed)
+        let changed = await store.refresh(enabledAgents: both)
+        #expect(changed.upserts.map(\.id) == [id])
+        let titled = try #require(await store.titled(records: changed.upserts).first)
+        #expect(titled.title == "Local alias")
+        #expect(titled.sourceTitle == "Agent title")
+        await store.markIndexed(changed)
+
+        // A duplicate request is stable, and entity string matching still
+        // finds the session through its original agent title.
+        #expect(try await store.setAlias(id: id, alias: "Local alias") == .unchanged)
+        #expect(await store.refresh(enabledAgents: both).isEmpty)
+        #expect(await store.allTitled(matching: "Agent title").map(\.record.id) == [id])
+
+        try writeCodexSession(env, title: "Updated agent title")
+        let upstreamChanged = await store.refresh(enabledAgents: both)
+        let updated = try #require(await store.titled(records: upstreamChanged.upserts).first)
+        #expect(updated.title == "Local alias")
+        #expect(updated.sourceTitle == "Updated agent title")
+    }
+
+    @Test func clearingAliasTargetsOneUpsertAndUnknownFails() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env, title: "Claude source")
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        let id = "claude:\(ClaudeScannerTests.uuid)"
+
+        _ = try await store.setAlias(id: id, alias: "Claude alias")
+        let aliased = await store.refresh(enabledAgents: both)
+        await store.markIndexed(aliased)
+        #expect(try await store.clearAlias(id: id) == .changed)
+        let cleared = await store.refresh(enabledAgents: both)
+        #expect(cleared.upserts.map(\.id) == [id])
+        #expect(await store.titled(records: cleared.upserts).first?.title == "Claude source")
+        await store.markIndexed(cleared)
+        #expect(try await store.clearAlias(id: id) == .unchanged)
+        #expect(await store.refresh(enabledAgents: both).isEmpty)
+        #expect(try await store.setAlias(id: "codex:missing", alias: "No") == .unknownSession)
+    }
+
+    @Test func aliasesSurviveScanCacheResetAndPruneWithDeletedSession() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env)
+        let id = "claude:\(ClaudeScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+        _ = try await store.setAlias(id: id, alias: "Persistent alias")
+
+        // Reset only the scan cache; aliases are a separate user-owned file.
+        try FileManager.default.removeItem(at: env.cacheURL)
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.aliases() == [id: "Persistent alias"])
+
+        try FileManager.default.removeItem(
+            at: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.aliases().isEmpty)
+
+        let afterDelete = makeStore(env)
+        await afterDelete.bootstrap()
+        #expect(await afterDelete.aliases().isEmpty)
+    }
+
+    @Test func cacheResetPlusTransientEnumerationFailurePreservesAliases() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env)
+        let id = "claude:\(ClaudeScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+        _ = try await store.setAlias(id: id, alias: "Do not erase")
+        try FileManager.default.removeItem(at: env.cacheURL)
+
+        let projectsRoot = env.claudeHome.appendingPathComponent("projects")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: projectsRoot.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: projectsRoot.path)
+        }
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.aliases() == [id: "Do not erase"])
     }
 }

@@ -24,6 +24,14 @@ struct ProjectInfo: Sendable, Hashable {
 struct TitledSession: Sendable, Hashable {
     var record: SessionRecord
     var title: String
+    /// Agent-derived title before a Spotion-only alias is applied.
+    var sourceTitle: String
+}
+
+enum AliasUpdateResult: Sendable, Equatable {
+    case changed
+    case unchanged
+    case unknownSession
 }
 
 /// Single owner of all session state: mtime+size incremental scanning,
@@ -32,6 +40,7 @@ actor SessionStore {
     private let cacheURL: URL
     private let codexScanner: CodexScanner?
     private let claudeScanner: ClaudeScanner?
+    private var aliasStore: SessionAliasStore
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -43,15 +52,24 @@ actor SessionStore {
     /// is required.
     private var pendingFullRebuild = false
 
-    init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
+    init(
+        cacheURL: URL,
+        codexScanner: CodexScanner?,
+        claudeScanner: ClaudeScanner?,
+        aliasesURL: URL? = nil
+    ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
         self.claudeScanner = claudeScanner
+        self.aliasStore = SessionAliasStore(
+            url: aliasesURL
+                ?? cacheURL.deletingLastPathComponent().appendingPathComponent("session-aliases-v1.json"))
     }
 
     // MARK: - Lifecycle
 
     func bootstrap() {
+        aliasStore.bootstrap()
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
@@ -272,6 +290,17 @@ actor SessionStore {
         // multiple files sharing a session_id, and deletion fallback).
         rebuildRecords()
 
+        // A failed enabled-root enumeration means the current record set is
+        // incomplete. In particular, a scan-cache reset followed by a
+        // transient permission failure must not erase otherwise valid aliases.
+        if roots.allSatisfy({ !$0.enabled || $0.trustworthy }) {
+            do {
+                try aliasStore.prune(validIDs: Set(records.keys))
+            } catch {
+                NSLog("Spotion: stale alias prune failed: %@", error.localizedDescription)
+            }
+        }
+
         // A deleted/corrupted winning rollout may reveal an unchanged fallback
         // record that was decoded without private prompt text. Defer that
         // upsert one cycle and queue its winning path for bounded hydration.
@@ -368,14 +397,40 @@ actor SessionStore {
 
     func record(id: String) -> SessionRecord? { records[id] }
 
+    func setAlias(id: String, alias: String) throws -> AliasUpdateResult {
+        guard records[id] != nil else { return .unknownSession }
+        guard try aliasStore.setAlias(alias, for: id) else { return .unchanged }
+        cache.dirtyIDs.insert(id)
+        persist()
+        return .changed
+    }
+
+    func clearAlias(id: String) throws -> AliasUpdateResult {
+        guard records[id] != nil else { return .unknownSession }
+        guard try aliasStore.clearAlias(for: id) else { return .unchanged }
+        cache.dirtyIDs.insert(id)
+        persist()
+        return .changed
+    }
+
+    func aliases() -> [String: String] {
+        aliasStore.aliases
+    }
+
+    func aliasLoadWarning() -> String? {
+        aliasStore.loadWarning
+    }
+
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
         var result = Array(records.values)
         if let query, !query.trimmingCharacters(in: .whitespaces).isEmpty {
             let needle = query.lowercased()
             result = result.filter {
                 displayTitle(for: $0).lowercased().contains(needle)
+                    || sourceTitle(for: $0).lowercased().contains(needle)
                     || $0.projectName.lowercased().contains(needle)
                     || $0.cwd.lowercased().contains(needle)
+                    || ($0.gitBranch?.lowercased().contains(needle) ?? false)
             }
         }
         result.sort { $0.lastActivityAt > $1.lastActivityAt }
@@ -393,9 +448,8 @@ actor SessionStore {
             .sorted { $0.lastUsed > $1.lastUsed }
     }
 
-    /// codex: session_index title > first prompt > project name;
-    /// claude: tail title records > first prompt > project name.
-    func displayTitle(for record: SessionRecord) -> String {
+    /// Agent-provided title before a Spotion-only alias is applied.
+    func sourceTitle(for record: SessionRecord) -> String {
         let raw: String? = switch record.agent {
         case .codex: cache.codexTitles[record.sessionID] ?? record.firstPrompt
         case .claude: record.fallbackTitle ?? record.firstPrompt
@@ -404,8 +458,18 @@ actor SessionStore {
         return sanitized.isEmpty ? record.projectName : sanitized
     }
 
+    /// Spotion alias > agent title > first prompt > project name.
+    func displayTitle(for record: SessionRecord) -> String {
+        aliasStore.alias(for: record.id) ?? sourceTitle(for: record)
+    }
+
     func titled(records: [SessionRecord]) -> [TitledSession] {
-        records.map { TitledSession(record: $0, title: displayTitle(for: $0)) }
+        records.map {
+            TitledSession(
+                record: $0,
+                title: displayTitle(for: $0),
+                sourceTitle: sourceTitle(for: $0))
+        }
     }
 
     func allTitled(limit: Int? = nil, matching query: String? = nil) -> [TitledSession] {
