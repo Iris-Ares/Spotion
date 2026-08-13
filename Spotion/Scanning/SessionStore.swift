@@ -295,12 +295,16 @@ actor SessionStore {
         rebuildRecords()
 
         // Pins are independent from the scan cache, but only current sessions
-        // may remain pinned. A transient enumeration failure keeps the record
-        // above, so it cannot accidentally prune a valid pin.
-        do {
-            try pinnedStore.prune(validIDs: Set(records.keys))
-        } catch {
-            NSLog("Spotion: pinned session prune failed: %@", error.localizedDescription)
+        // may remain pinned. After a cache reset there are no records to retain
+        // when an enabled root cannot be enumerated, so prune only from a
+        // complete snapshot. Disabled roots remain intentionally trustworthy:
+        // their sessions should be removed and their pins eventually pruned.
+        if roots.allSatisfy({ !$0.enabled || $0.trustworthy }) {
+            do {
+                try pinnedStore.prune(validIDs: Set(records.keys))
+            } catch {
+                NSLog("Spotion: pinned session prune failed: %@", error.localizedDescription)
+            }
         }
 
         // A deleted/corrupted winning rollout may reveal an unchanged fallback

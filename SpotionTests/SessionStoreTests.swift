@@ -637,4 +637,27 @@ import Testing
         await afterDisable.bootstrap()
         #expect(await afterDisable.pinnedSessionIDs().isEmpty)
     }
+
+    @Test func cacheResetPlusTransientEnumerationFailurePreservesPins() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env)
+        let id = "claude:\(ClaudeScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+        #expect(try await store.setPinned(id: id, pinned: true) == .changed)
+        try FileManager.default.removeItem(at: env.cacheURL)
+
+        let projectsRoot = env.claudeHome.appendingPathComponent("projects")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: projectsRoot.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: projectsRoot.path)
+        }
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.pinnedSessionIDs() == [id])
+    }
 }
