@@ -80,6 +80,14 @@ actor SessionStore {
         }
         cache = loaded
         rebuildRecords()
+        if aliasStore.loadWarning != nil {
+            // Spotlight may still contain titles donated from the now-unreadable
+            // alias payload. Re-donate every cached record from source metadata
+            // so visible results match the safe empty-alias fallback. Keep the
+            // warning until a successful alias write replaces the damaged file.
+            cache.dirtyIDs.formUnion(records.keys)
+            persist()
+        }
     }
 
     /// Read and clear the full-rebuild flag (consumed once by the coordinator

@@ -667,4 +667,30 @@ import Testing
         _ = await relaunched.refresh(enabledAgents: both)
         #expect(await relaunched.aliases() == [id: "Do not erase"])
     }
+
+    @Test func corruptedAliasStoreRedonatesSourceTitle() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env, title: "Agent title")
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.setAlias(id: id, alias: "Local alias") == .changed)
+        let aliased = await store.refresh(enabledAgents: both)
+        await store.markIndexed(aliased)
+
+        let aliasesURL = env.cacheURL.deletingLastPathComponent()
+            .appendingPathComponent("session-aliases-v1.json")
+        try TestSupport.write("not json", to: aliasesURL)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        #expect(await relaunched.aliasLoadWarning() != nil)
+        let recovered = await relaunched.refresh(enabledAgents: both)
+        #expect(recovered.upserts.map(\.id) == [id])
+        #expect(await relaunched.titled(records: recovered.upserts).first?.title == "Agent title")
+        #expect(await relaunched.aliasLoadWarning() != nil)
+    }
 }
