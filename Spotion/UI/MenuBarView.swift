@@ -16,15 +16,20 @@ struct MenuBarView: View {
             }
             Divider()
         }
-        if state.recent.isEmpty {
+        if state.pinned.isEmpty && state.recent.isEmpty {
             Text(state.isScanning ? "正在扫描会话…" : "尚未索引任何会话")
-        } else {
-            ForEach(state.recent, id: \.record.id) { item in
-                Button("\(item.title)") {
-                    Task {
-                        do { try await AppCoordinator.shared.openSession(id: item.record.id) }
-                        catch { AppCoordinator.shared.uiState.lastError = error.localizedDescription }
-                    }
+        }
+        if !state.pinned.isEmpty {
+            Section("Pinned") {
+                ForEach(state.pinned, id: \.record.id) { item in
+                    sessionButton(item)
+                }
+            }
+        }
+        if !state.recent.isEmpty {
+            Section("Recent") {
+                ForEach(state.recent, id: \.record.id) { item in
+                    sessionButton(item)
                 }
             }
         }
@@ -57,6 +62,15 @@ struct MenuBarView: View {
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q")
+    }
+
+    private func sessionButton(_ item: TitledSession) -> some View {
+        Button("\(item.title)") {
+            Task {
+                do { try await AppCoordinator.shared.openSession(id: item.record.id) }
+                catch { AppCoordinator.shared.uiState.lastError = error.localizedDescription }
+            }
+        }
     }
 
     private var statsLine: String {

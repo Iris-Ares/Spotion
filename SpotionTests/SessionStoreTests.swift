@@ -32,11 +32,15 @@ import Testing
             to: env.codexHome.appendingPathComponent("session_index.jsonl"))
     }
 
-    private func writeClaudeSession(_ env: Env, uuid: String = ClaudeScannerTests.uuid) throws {
+    private func writeClaudeSession(
+        _ env: Env,
+        uuid: String = ClaudeScannerTests.uuid,
+        title: String = "Claude 标题"
+    ) throws {
         try TestSupport.write(
             [
                 ClaudeScannerTests.user("claude prompt"),
-                ClaudeScannerTests.customTitle("Claude 标题"),
+                ClaudeScannerTests.customTitle(title),
             ].joined(separator: "\n") + "\n",
             to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(uuid).jsonl"))
     }
@@ -560,5 +564,77 @@ import Testing
 
         let d2 = await store.refresh(enabledAgents: [.codex])
         #expect(d2.deletedIDs == ["claude:\(ClaudeScannerTests.uuid)"])
+    }
+
+    @Test func pinAndUnpinTargetOneUpsertThenStabilize() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+
+        let id = "codex:\(CodexScannerTests.uuid)"
+        #expect(try await store.setPinned(id: id, pinned: true) == .changed)
+        let pinned = await store.refresh(enabledAgents: both)
+        #expect(pinned.upserts.map(\.id) == [id])
+        #expect(await store.titled(records: pinned.upserts).first?.isPinned == true)
+        await store.markIndexed(pinned)
+        #expect(try await store.setPinned(id: id, pinned: true) == .unchanged)
+        #expect(await store.refresh(enabledAgents: both).isEmpty)
+
+        #expect(try await store.setPinned(id: id, pinned: false) == .changed)
+        let unpinned = await store.refresh(enabledAgents: both)
+        #expect(unpinned.upserts.map(\.id) == [id])
+        #expect(await store.titled(records: unpinned.upserts).first?.isPinned == false)
+        await store.markIndexed(unpinned)
+        #expect(await store.refresh(enabledAgents: both).isEmpty)
+        #expect(try await store.setPinned(id: "codex:missing", pinned: true) == .unknownSession)
+    }
+
+    @Test func menuSectionsSortPinsAndDeduplicateRecents() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env, title: "Zulu")
+        try writeClaudeSession(env, title: "alpha")
+        let second = "bbbbcccc-1122-3344-5566-77889900aabb"
+        try writeClaudeSession(env, uuid: second, title: "Beta")
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+        try await store.setPinned(id: "codex:\(CodexScannerTests.uuid)", pinned: true)
+        try await store.setPinned(id: "claude:\(ClaudeScannerTests.uuid)", pinned: true)
+
+        let menu = await store.menuSections(recentLimit: 5)
+        #expect(menu.pinned.map(\.title) == ["alpha", "Zulu"])
+        #expect(menu.recent.map(\.record.id) == ["claude:\(second)"])
+        #expect(Set(menu.pinned.map(\.record.id)).isDisjoint(with: menu.recent.map(\.record.id)))
+    }
+
+    @Test func pinsSurviveScanCacheResetAndPruneWhenAgentDisabled() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+        let claudeID = "claude:\(ClaudeScannerTests.uuid)"
+        #expect(try await store.setPinned(id: claudeID, pinned: true) == .changed)
+
+        // Reset only the scan cache; the independent pin file must survive.
+        try FileManager.default.removeItem(at: env.cacheURL)
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.pinnedSessionIDs() == [claudeID])
+
+        _ = await relaunched.refresh(enabledAgents: [.codex])
+        #expect(await relaunched.pinnedSessionIDs().isEmpty)
+
+        let afterDisable = makeStore(env)
+        await afterDisable.bootstrap()
+        #expect(await afterDisable.pinnedSessionIDs().isEmpty)
     }
 }

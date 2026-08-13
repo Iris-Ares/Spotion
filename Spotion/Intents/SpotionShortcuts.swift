@@ -22,5 +22,17 @@ struct SpotionShortcuts: AppShortcutsProvider {
             shortTitle: "Reindex Sessions",
             systemImageName: "arrow.clockwise"
         )
+        AppShortcut(
+            intent: PinSessionIntent(),
+            phrases: ["Pin a session in \(.applicationName)"],
+            shortTitle: "Pin Session",
+            systemImageName: "pin"
+        )
+        AppShortcut(
+            intent: UnpinSessionIntent(),
+            phrases: ["Unpin a session in \(.applicationName)"],
+            shortTitle: "Unpin Session",
+            systemImageName: "pin.slash"
+        )
     }
 }

@@ -15,6 +15,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
+    var isPinned: Bool
 
     init(_ titled: TitledSession) {
         let record = titled.record
@@ -28,6 +29,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
+        self.isPinned = titled.isPinned
     }
 
     var displayRepresentation: DisplayRepresentation {
@@ -68,5 +70,9 @@ struct SessionEntity: AppEntity, IndexedEntity {
         // provider guarantees meaningful artwork (agent app icon or Spotion's).
         attributes.thumbnailData = AgentIconProvider.shared.thumbnailPNG(for: agent)
         return attributes
+    }
+
+    var donationPriority: Int {
+        SessionDonationPriority.value(isPinned: isPinned)
     }
 }

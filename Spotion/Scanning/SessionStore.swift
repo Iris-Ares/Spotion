@@ -24,6 +24,18 @@ struct ProjectInfo: Sendable, Hashable {
 struct TitledSession: Sendable, Hashable {
     var record: SessionRecord
     var title: String
+    var isPinned: Bool
+}
+
+struct SessionMenuSections: Sendable, Equatable {
+    var pinned: [TitledSession]
+    var recent: [TitledSession]
+}
+
+enum PinUpdateResult: Sendable, Equatable {
+    case changed
+    case unchanged
+    case unknownSession
 }
 
 /// Single owner of all session state: mtime+size incremental scanning,
@@ -32,6 +44,7 @@ actor SessionStore {
     private let cacheURL: URL
     private let codexScanner: CodexScanner?
     private let claudeScanner: ClaudeScanner?
+    private var pinnedStore: PinnedSessionStore
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -43,15 +56,24 @@ actor SessionStore {
     /// is required.
     private var pendingFullRebuild = false
 
-    init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
+    init(
+        cacheURL: URL,
+        codexScanner: CodexScanner?,
+        claudeScanner: ClaudeScanner?,
+        pinnedSessionsURL: URL? = nil
+    ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
         self.claudeScanner = claudeScanner
+        self.pinnedStore = PinnedSessionStore(
+            url: pinnedSessionsURL
+                ?? cacheURL.deletingLastPathComponent().appendingPathComponent("pinned-sessions-v1.json"))
     }
 
     // MARK: - Lifecycle
 
     func bootstrap() {
+        pinnedStore.bootstrap()
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
@@ -272,6 +294,15 @@ actor SessionStore {
         // multiple files sharing a session_id, and deletion fallback).
         rebuildRecords()
 
+        // Pins are independent from the scan cache, but only current sessions
+        // may remain pinned. A transient enumeration failure keeps the record
+        // above, so it cannot accidentally prune a valid pin.
+        do {
+            try pinnedStore.prune(validIDs: Set(records.keys))
+        } catch {
+            NSLog("Spotion: pinned session prune failed: %@", error.localizedDescription)
+        }
+
         // A deleted/corrupted winning rollout may reveal an unchanged fallback
         // record that was decoded without private prompt text. Defer that
         // upsert one cycle and queue its winning path for bounded hydration.
@@ -368,6 +399,20 @@ actor SessionStore {
 
     func record(id: String) -> SessionRecord? { records[id] }
 
+    func setPinned(id: String, pinned: Bool) throws -> PinUpdateResult {
+        guard records[id] != nil else { return .unknownSession }
+        guard try pinnedStore.setPinned(pinned, id: id) else { return .unchanged }
+        // The existing dirty-id contract makes the targeted re-donation
+        // durable across Spotlight failures and app relaunches.
+        cache.dirtyIDs.insert(id)
+        persist()
+        return .changed
+    }
+
+    func pinnedSessionIDs() -> Set<String> {
+        pinnedStore.sessionIDs
+    }
+
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
         var result = Array(records.values)
         if let query, !query.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -405,11 +450,34 @@ actor SessionStore {
     }
 
     func titled(records: [SessionRecord]) -> [TitledSession] {
-        records.map { TitledSession(record: $0, title: displayTitle(for: $0)) }
+        records.map {
+            TitledSession(
+                record: $0,
+                title: displayTitle(for: $0),
+                isPinned: pinnedStore.contains($0.id))
+        }
     }
 
     func allTitled(limit: Int? = nil, matching query: String? = nil) -> [TitledSession] {
         titled(records: all(limit: limit, matching: query))
+    }
+
+    /// Pinned rows use stable title order (with id as a deterministic tie
+    /// breaker); recent rows keep activity order and exclude pinned ids.
+    func menuSections(recentLimit: Int) -> SessionMenuSections {
+        let allRecords = all()
+        let pinned = titled(records: allRecords.filter { pinnedStore.contains($0.id) })
+            .sorted {
+                let left = $0.title.lowercased()
+                let right = $1.title.lowercased()
+                return left == right ? $0.record.id < $1.record.id : left < right
+            }
+        let recentRecords = allRecords
+            .filter { !pinnedStore.contains($0.id) }
+            .prefix(recentLimit)
+        return SessionMenuSections(
+            pinned: pinned,
+            recent: titled(records: Array(recentRecords)))
     }
 
     func scanReport() -> String {
