@@ -17,10 +17,14 @@ final class UIState {
 
 enum SpotionError: LocalizedError {
     case sessionNotFound(String)
+    case aliasUpdateFailed(String)
+    case spotlightAliasUpdatePending
 
     var errorDescription: String? {
         switch self {
         case .sessionNotFound(let id): "会话已不存在：\(id)"
+        case .aliasUpdateFailed(let message): "无法保存 Spotion 会话别名：\(message)"
+        case .spotlightAliasUpdatePending: "Spotion 别名已保存，但 Spotlight 暂未响应；将自动重试。"
         }
     }
 }
@@ -243,7 +247,7 @@ final class AppCoordinator {
                 try await indexer.delete(ids: diff.deletedIDs)
             }
             await store.markIndexed(diff)
-            uiState.lastError = nil
+            uiState.lastError = await store.aliasLoadWarning()
         } catch {
             applied = false
             uiState.lastError = error.localizedDescription
@@ -326,6 +330,52 @@ final class AppCoordinator {
             return .terminal(SpotionSettings.terminal)
         case .nativeApp:
             return .nativeApp(appName: try await NativeAppLauncher.shared.resume(record))
+        }
+    }
+
+    // MARK: - Spotion-only aliases
+
+    func setSessionAlias(id: String, alias: String) async throws {
+        try await updateAlias(id: id, alias: alias)
+    }
+
+    func clearSessionAlias(id: String) async throws {
+        try await updateAlias(id: id, alias: nil)
+    }
+
+    private enum AliasActionOutcome: Sendable {
+        case success
+        case notFound
+        case failed(String)
+        case indexPending
+    }
+
+    private func updateAlias(id: String, alias: String?) async throws {
+        let outcome: AliasActionOutcome = await enqueue {
+            await self.ensureReady()
+            do {
+                let result = if let alias {
+                    try await self.store.setAlias(id: id, alias: alias)
+                } else {
+                    try await self.store.clearAlias(id: id)
+                }
+                switch result {
+                case .unknownSession:
+                    return .notFound
+                case .unchanged:
+                    return .success
+                case .changed:
+                    return await self.performRefreshAndApply() ? .success : .indexPending
+                }
+            } catch {
+                return .failed(error.localizedDescription)
+            }
+        }
+        switch outcome {
+        case .success: return
+        case .notFound: throw SpotionError.sessionNotFound(id)
+        case .failed(let message): throw SpotionError.aliasUpdateFailed(message)
+        case .indexPending: throw SpotionError.spotlightAliasUpdatePending
         }
     }
 

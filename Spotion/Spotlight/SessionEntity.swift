@@ -7,6 +7,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
 
     var id: String
     var title: String
+    var sourceTitle: String
     var projectName: String
     var cwd: String
     var agent: AgentKind
@@ -20,6 +21,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         let record = titled.record
         self.id = record.id
         self.title = titled.title
+        self.sourceTitle = titled.sourceTitle
         self.projectName = record.projectName
         self.cwd = record.cwd
         self.agent = record.agent
@@ -56,10 +58,14 @@ struct SessionEntity: AppEntity, IndexedEntity {
             cwd: cwd,
             includeLaterPrompts: SpotionSettings.searchLaterPrompts
         )
-        var keywords = [projectName, agent.displayName, agent.rawValue, "session"]
-        if let gitBranch { keywords.append(gitBranch) }
-        keywords += cwd.split(separator: "/").map(String.init)
-        attributes.keywords = keywords
+        attributes.keywords = SessionSearchMetadata.keywords(
+            displayTitle: title,
+            sourceTitle: sourceTitle,
+            projectName: projectName,
+            agent: agent,
+            gitBranch: gitBranch,
+            cwd: cwd
+        )
         attributes.contentCreationDate = startedAt
         attributes.contentModificationDate = lastActivityAt
         // Grouped by agent domain, enabling bulk deletion when an agent is disabled
