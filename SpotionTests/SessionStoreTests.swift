@@ -739,6 +739,32 @@ import Testing
         #expect(await relaunched.aliases() == [id: "Do not erase"])
     }
 
+    @Test func cacheResetPlusUnusableTranscriptPreservesAliases() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env, title: "Agent title")
+        let id = "claude:\(ClaudeScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+        #expect(try await store.setAlias(id: id, alias: "Do not erase") == .changed)
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try TestSupport.write(
+            "temporarily unusable transcript\n",
+            to: env.claudeHome.appendingPathComponent(
+                "projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.aliases() == [id: "Do not erase"])
+
+        try writeClaudeSession(env, title: "Recovered title")
+        let recovered = await relaunched.refresh(enabledAgents: both)
+        #expect(recovered.upserts.map(\.id) == [id])
+        #expect(await relaunched.titled(records: recovered.upserts).first?.title == "Do not erase")
+    }
+
     @Test func corruptedAliasStoreRedonatesSourceTitle() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "Agent title")

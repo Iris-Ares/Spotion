@@ -200,6 +200,7 @@ actor SessionStore {
         }
         var roots: [RootState] = []
         var toParse: [(scanner: any SessionScanner, file: ScannedFile)] = []
+        var incompleteAgents = Set<AgentKind>()
 
         let scanners: [any SessionScanner] = [codexScanner as (any SessionScanner)?, claudeScanner]
             .compactMap { $0 }
@@ -236,15 +237,18 @@ actor SessionStore {
         }
 
         // Parse changed files in parallel (pure value functions, I/O bound)
-        let parsed = await withTaskGroup(of: (ScannedFile, ParseOutcome).self) { group in
+        let parsed = await withTaskGroup(of: (ScannedFile, AgentKind, ParseOutcome).self) { group in
             for (scanner, file) in toParse {
-                group.addTask { (file, scanner.parse(file, includeLaterPrompts: includeLaterPrompts)) }
+                group.addTask {
+                    (file, scanner.agent, scanner.parse(file, includeLaterPrompts: includeLaterPrompts))
+                }
             }
-            var results: [(ScannedFile, ParseOutcome)] = []
+            var results: [(ScannedFile, AgentKind, ParseOutcome)] = []
             for await item in group { results.append(item) }
             return results
         }
-        for (file, outcome) in parsed {
+        for (file, agent, outcome) in parsed {
+            if outcome.record == nil { incompleteAgents.insert(agent) }
             // I/O failure: do NOT touch the cache entry. The kept entry's stale
             // mtime/size guarantee a re-parse attempt on the next refresh once
             // the file is readable again — caching nil here would evict the
@@ -299,18 +303,21 @@ actor SessionStore {
         rebuildRecords()
 
         // A failed enabled-root enumeration means the current record set is
-        // incomplete. Disabled agents are also intentionally unverified: their
-        // cached records leave the active index, but user-authored aliases must
-        // survive so re-enabling the agent can restore them.
+        // incomplete. Disabled agents and agents with any temporarily unusable
+        // transcript are also intentionally unverified: their cached records
+        // may leave the active index, but user-authored aliases must survive
+        // until a complete scan can confirm actual source deletion.
         if roots.allSatisfy({ !$0.enabled || $0.trustworthy }) {
-            let disabledPrefixes = scanners
-                .filter { !enabledAgents.contains($0.agent) }
+            let unverifiedPrefixes = scanners
+                .filter {
+                    !enabledAgents.contains($0.agent) || incompleteAgents.contains($0.agent)
+                }
                 .map { "\($0.agent.rawValue):" }
-            let disabledAliasIDs = aliasStore.aliases.keys.filter { id in
-                disabledPrefixes.contains { id.hasPrefix($0) }
+            let unverifiedAliasIDs = aliasStore.aliases.keys.filter { id in
+                unverifiedPrefixes.contains { id.hasPrefix($0) }
             }
             do {
-                try aliasStore.prune(validIDs: Set(records.keys).union(disabledAliasIDs))
+                try aliasStore.prune(validIDs: Set(records.keys).union(unverifiedAliasIDs))
             } catch {
                 NSLog("Spotion: stale alias prune failed: %@", error.localizedDescription)
             }
