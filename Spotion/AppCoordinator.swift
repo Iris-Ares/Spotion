@@ -13,14 +13,19 @@ final class UIState {
     var lastError: String?
     var isScanning = false
     var recent: [TitledSession] = []
+    var excludedProjects: [ProjectExclusion] = []
+    var availableProjects: [ProjectInfo] = []
 }
 
-enum SpotionError: LocalizedError {
+enum SpotionError: LocalizedError, Sendable {
     case sessionNotFound(String)
+    case indexMutationPending(String)
 
     var errorDescription: String? {
         switch self {
         case .sessionNotFound(let id): "会话已不存在：\(id)"
+        case .indexMutationPending(let action):
+            "\(action) 已安全记录，但 Spotlight 尚未确认更新；Spotion 会在下次刷新和重启后继续重试。"
         }
     }
 }
@@ -52,6 +57,7 @@ final class AppCoordinator {
             .appendingPathComponent("Spotion", isDirectory: true)
         store = SessionStore(
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
+            projectExclusionsURL: appSupport.appendingPathComponent("project-exclusions-v1.json"),
             codexScanner: CodexScanner(),
             claudeScanner: ClaudeScanner()
         )
@@ -211,6 +217,18 @@ final class AppCoordinator {
         return await task.value
     }
 
+    private func enqueueThrowing<T: Sendable>(
+        _ work: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let previous = pipeline
+        let task = Task { @MainActor () throws -> T in
+            await previous?.value
+            return try await work()
+        }
+        pipeline = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
     /// Returns whether the donate/delete apply completed without error (the
     /// scan itself is infallible; a false return means the diff was left for
     /// the dirty/indexed retry mechanics).
@@ -243,7 +261,7 @@ final class AppCoordinator {
                 try await indexer.delete(ids: diff.deletedIDs)
             }
             await store.markIndexed(diff)
-            uiState.lastError = nil
+            uiState.lastError = await store.exclusionStateMessage
         } catch {
             applied = false
             uiState.lastError = error.localizedDescription
@@ -270,6 +288,8 @@ final class AppCoordinator {
         uiState.parseFailures = stats.parseFailures
         uiState.lastIndexed = Date()
         uiState.recent = await store.allTitled(limit: 5)
+        uiState.excludedProjects = await store.projectExclusionList()
+        uiState.availableProjects = await store.distinctProjects()
         if !diff.isEmpty {
             NSLog(
                 "Spotion refresh: codex=%d claude=%d failures=%d upserts=%d deletes=%d in %.1fs",
@@ -309,6 +329,28 @@ final class AppCoordinator {
                 try? await self.indexer.deleteDomain("spotion.\(agent.rawValue)")
             }
             await self.performRefreshAndApply()
+        }
+    }
+
+    // MARK: - Project exclusions
+
+    func addProjectExclusion(path: String) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            guard try await self.store.addProjectExclusion(path: path) else { return }
+            guard await self.performRefreshAndApply() else {
+                throw SpotionError.indexMutationPending("项目排除规则")
+            }
+        }
+    }
+
+    func removeProjectExclusion(path: String) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            guard try await self.store.removeProjectExclusion(path: path) else { return }
+            guard await self.performRefreshAndApply() else {
+                throw SpotionError.indexMutationPending("项目恢复规则")
+            }
         }
     }
 
