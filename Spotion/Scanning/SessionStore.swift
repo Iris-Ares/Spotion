@@ -301,9 +301,16 @@ actor SessionStore {
         let currentIDs = Set(records.keys)
         let trustworthyAgents = Set(roots.filter { $0.enabled && $0.trustworthy }.map(\.agent))
         if hiddenSessions.isAvailable {
+            // A transcript path that was enumerated but could not currently be
+            // parsed is not evidence that the source disappeared. Preserve its
+            // hide entry so a cache reset plus transient/unusable file cannot
+            // expose the session when parsing later recovers.
+            let observedHiddenIDs = hiddenSessions.snapshots().filter {
+                seenPaths.contains($0.filePath)
+            }.map(\.id)
             do {
                 _ = try hiddenSessions.pruneMissing(
-                    validIDs: currentIDs,
+                    validIDs: currentIDs.union(observedHiddenIDs),
                     trustworthyAgents: trustworthyAgents)
                 hiddenStateRuntimeError = nil
             } catch {
@@ -513,13 +520,24 @@ actor SessionStore {
         guard records[id] != nil else {
             throw SessionStoreError.hiddenSessionSourceUnavailable(id)
         }
-        let changed = try hiddenSessions.restore(id: id)
-        if changed {
-            cache.dirtyIDs.insert(id)
-            persist()
-            hiddenStateRuntimeError = nil
+
+        // Make the Spotlight re-donation obligation durable before clearing
+        // the independent hide state. A crash between the two writes then
+        // leaves either a still-hidden session or a visible session queued for
+        // upsert, never a restored session that remains absent indefinitely.
+        cache.dirtyIDs.insert(id)
+        do {
+            try persistCache()
+        } catch {
+            cache.dirtyIDs.remove(id)
+            throw error
         }
-        return changed
+
+        // A failed hide-state write may leave one harmless dirty retry queued;
+        // it must not erase the already-durable re-donation obligation.
+        _ = try hiddenSessions.restore(id: id)
+        hiddenStateRuntimeError = nil
+        return true
     }
 
     func hiddenSessionSnapshots() -> [HiddenSessionSnapshot] {
@@ -552,12 +570,16 @@ actor SessionStore {
 
     private func persist() {
         do {
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: cacheURL, options: .atomic)
+            try persistCache()
         } catch {
             NSLog("Spotion: cache persist failed: %@", error.localizedDescription)
         }
+    }
+
+    private func persistCache() throws {
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(cache)
+        try data.write(to: cacheURL, options: .atomic)
     }
 }
