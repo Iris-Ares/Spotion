@@ -525,11 +525,12 @@ actor SessionStore {
         // the independent hide state. A crash between the two writes then
         // leaves either a still-hidden session or a visible session queued for
         // upsert, never a restored session that remains absent indefinitely.
+        let wasDirty = cache.dirtyIDs.contains(id)
         cache.dirtyIDs.insert(id)
         do {
             try persistCache()
         } catch {
-            cache.dirtyIDs.remove(id)
+            if !wasDirty { cache.dirtyIDs.remove(id) }
             throw error
         }
 
