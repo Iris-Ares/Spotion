@@ -417,11 +417,12 @@ actor SessionStore {
         // Persist the re-donation obligation before committing the independent
         // pin file. If the process exits between these writes, the next launch
         // still reconciles Spotlight with whichever pin state reached disk.
+        let wasDirty = cache.dirtyIDs.contains(id)
         cache.dirtyIDs.insert(id)
         do {
             try persistCache()
         } catch {
-            cache.dirtyIDs.remove(id)
+            if !wasDirty { cache.dirtyIDs.remove(id) }
             throw error
         }
 

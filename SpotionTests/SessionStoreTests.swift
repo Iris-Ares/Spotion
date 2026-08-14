@@ -616,6 +616,32 @@ import Testing
         #expect(await relaunched.refresh(enabledAgents: both).isEmpty)
     }
 
+    @Test func failedPinWritePreservesExistingDirtyObligation() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(await store.markDirty(ids: [id]).isEmpty)
+
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try FileManager.default.createDirectory(at: env.cacheURL, withIntermediateDirectories: false)
+        var updateFailed = false
+        do {
+            _ = try await store.setPinned(id: id, pinned: true)
+        } catch {
+            updateFailed = true
+        }
+        #expect(updateFailed)
+
+        try FileManager.default.removeItem(at: env.cacheURL)
+        let retry = await store.refresh(enabledAgents: both)
+        #expect(retry.upserts.map(\.id) == [id])
+    }
+
     @Test func menuSectionsSortPinsAndDeduplicateRecents() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "Zulu")
