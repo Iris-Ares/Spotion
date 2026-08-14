@@ -37,6 +37,7 @@ actor SessionStore {
     private let claudeScanner: ClaudeScanner?
     private var hiddenSessions: HiddenSessionStore
     private var hiddenStateRuntimeError: String?
+    private var projectExclusions: ProjectExclusionStore
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -60,6 +61,7 @@ actor SessionStore {
     init(
         cacheURL: URL,
         hiddenSessionsURL: URL? = nil,
+        projectExclusionsURL: URL? = nil,
         codexScanner: CodexScanner?,
         claudeScanner: ClaudeScanner?,
         historyWindow: SpotlightHistoryWindow = .all,
@@ -71,6 +73,9 @@ actor SessionStore {
         hiddenSessions = HiddenSessionStore(
             url: hiddenSessionsURL
                 ?? cacheURL.deletingLastPathComponent().appendingPathComponent("hidden-sessions-v1.json"))
+        projectExclusions = ProjectExclusionStore(
+            url: projectExclusionsURL
+                ?? cacheURL.deletingLastPathComponent().appendingPathComponent("project-exclusions-v1.json"))
         self.historyWindow = historyWindow
         historyReferenceDate = now
     }
@@ -79,6 +84,7 @@ actor SessionStore {
 
     func bootstrap() {
         hiddenSessions.load()
+        projectExclusions.load()
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
@@ -449,10 +455,11 @@ actor SessionStore {
         isEligible(record) || (isPolicyAllowed(record) && protectedIDs.contains(record.id))
     }
 
-    /// Spotion-only user policies (hidden…). Fail-closed stores answer false
-    /// for everything while unreadable.
+    /// Spotion-only user policies (hidden sessions, excluded projects).
+    /// Fail-closed stores answer "not allowed" for everything while unreadable.
     private func isPolicyAllowed(_ record: SessionRecord) -> Bool {
         hiddenSessions.allowsVisibility(of: record.id)
+            && !projectExclusions.excludes(cwd: record.cwd)
     }
 
     /// Policy-allowed and inside the history window as of the last refresh's
@@ -589,7 +596,63 @@ actor SessionStore {
 
     /// Non-fatal state problems worth showing in Settings.
     func warnings() -> [String] {
-        [hiddenStateRuntimeError ?? hiddenSessions.statusMessage].compactMap { $0 }
+        [hiddenStateRuntimeError ?? hiddenSessions.statusMessage, projectExclusions.statusMessage]
+            .compactMap { $0 }
+    }
+
+    // MARK: - Project exclusions
+
+    func addProjectExclusion(path: String) throws -> Bool {
+        let previouslyVisible = Set(records.values.filter {
+            !projectExclusions.excludes(cwd: $0.cwd)
+        }.map(\.id))
+        guard try projectExclusions.add(path: path) != nil else { return false }
+
+        let newlyExcluded = previouslyVisible.filter { id in
+            guard let record = records[id] else { return false }
+            return projectExclusions.excludes(cwd: record.cwd)
+        }
+        cache.dirtyIDs.subtract(newlyExcluded)
+        persist()
+        return true
+    }
+
+    func removeProjectExclusion(path: String) throws -> Bool {
+        guard let removed = try projectExclusions.matchingExclusion(path: path) else {
+            return false
+        }
+        let remainingPaths = projectExclusions.exclusions().map(\.path).filter {
+            !ProjectPathPolicy.sameDirectory($0, removed.path)
+        }
+        let newlyVisible = Set(records.values.filter { record in
+            projectExclusions.excludes(cwd: record.cwd)
+                && !remainingPaths.contains(where: {
+                    ProjectPathPolicy.contains(root: $0, candidate: record.cwd)
+                })
+        }.map(\.id))
+
+        // Make the targeted Spotlight re-donation obligation durable before
+        // clearing the independent policy rule. A crash between the two writes
+        // then leaves either an excluded session or a visible session queued
+        // for upsert, never a restored session that stays absent indefinitely.
+        let previousDirtyIDs = cache.dirtyIDs
+        cache.dirtyIDs.formUnion(newlyVisible)
+        do {
+            try persistCache()
+        } catch {
+            cache.dirtyIDs = previousDirtyIDs
+            throw error
+        }
+
+        // If the independent policy write fails, the already-durable dirty
+        // IDs are harmless while the rule remains active and must be retained
+        // for a later successful removal attempt.
+        _ = try projectExclusions.remove(path: removed.path)
+        return true
+    }
+
+    func projectExclusionList() -> [ProjectExclusion] {
+        projectExclusions.exclusions()
     }
 
     func scanReport() -> String {

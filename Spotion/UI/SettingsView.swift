@@ -227,6 +227,39 @@ private struct IndexSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Excluded projects") {
+                HStack {
+                    Button("Add Folder…") { chooseExcludedFolder() }
+                    Menu("Add Recent Project") {
+                        if state.availableProjects.isEmpty {
+                            Text("No observed projects")
+                        } else {
+                            ForEach(state.availableProjects, id: \.cwd) { project in
+                                Button("\(project.name) — \(project.cwd)") {
+                                    addExclusion(project.cwd)
+                                }
+                            }
+                        }
+                    }
+                }
+                if state.excludedProjects.isEmpty {
+                    Text("No projects are excluded from Spotion.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.excludedProjects) { exclusion in
+                        HStack {
+                            Text(exclusion.path)
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Button("Remove") { removeExclusion(exclusion.path) }
+                        }
+                    }
+                }
+                Text("Spotion excludes sessions whose working directory is this folder or a descendant. This does not change project files, agent transcripts, agent settings, or macOS Spotlight Privacy.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("状态") {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
                 LabeledContent("Claude Code 会话", value: "\(state.claudeCount)")
@@ -270,5 +303,38 @@ private struct IndexSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func chooseExcludedFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Exclude"
+        panel.message = "Choose a project folder to exclude from Spotion only."
+        if panel.runModal() == .OK, let path = panel.url?.path {
+            addExclusion(path)
+        }
+    }
+
+    private func addExclusion(_ path: String) {
+        Task { @MainActor in
+            do {
+                try await AppCoordinator.shared.addProjectExclusion(path: path)
+            } catch {
+                AppCoordinator.shared.uiState.lastError = error.localizedDescription
+            }
+        }
+    }
+
+    private func removeExclusion(_ path: String) {
+        Task { @MainActor in
+            do {
+                try await AppCoordinator.shared.removeProjectExclusion(path: path)
+            } catch {
+                AppCoordinator.shared.uiState.lastError = error.localizedDescription
+            }
+        }
     }
 }
