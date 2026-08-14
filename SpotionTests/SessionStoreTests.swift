@@ -664,4 +664,60 @@ import Testing
         _ = await store.refresh(enabledAgents: both)
         #expect(await store.hiddenSessionSnapshots().isEmpty)
     }
+
+    @Test func hiddenSessionSurvivesCacheResetWhileSourceIsUnusable() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.hideSession(id: id))
+        let hidden = await store.refresh(enabledAgents: both)
+        await store.markIndexed(hidden)
+
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try TestSupport.write(
+            "temporarily unusable transcript\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.hiddenSessionSnapshots().map(\.id) == [id])
+
+        try writeCodexSession(env)
+        let recovered = await relaunched.refresh(enabledAgents: both)
+        #expect(!recovered.upserts.contains { $0.id == id })
+        #expect(await relaunched.hiddenSessionSnapshots().map(\.id) == [id])
+    }
+
+    @Test func restoreRequiresDurableRedonationBeforeClearingHideState() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.hideSession(id: id))
+        let hidden = await store.refresh(enabledAgents: both)
+        await store.markIndexed(hidden)
+
+        // A directory at the cache file path makes the prerequisite atomic
+        // cache write fail while the independent hide store remains writable.
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try FileManager.default.createDirectory(at: env.cacheURL, withIntermediateDirectories: false)
+        var restoreFailed = false
+        do {
+            _ = try await store.restoreSession(id: id)
+        } catch {
+            restoreFailed = true
+        }
+        #expect(restoreFailed)
+        #expect(await store.hiddenSessionSnapshots().map(\.id) == [id])
+    }
 }
