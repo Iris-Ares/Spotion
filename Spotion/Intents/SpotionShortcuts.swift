@@ -22,5 +22,11 @@ struct SpotionShortcuts: AppShortcutsProvider {
             shortTitle: "Reindex Sessions",
             systemImageName: "arrow.clockwise"
         )
+        AppShortcut(
+            intent: HideSessionIntent(),
+            phrases: ["Hide a session from \(.applicationName)"],
+            shortTitle: "Hide Session",
+            systemImageName: "eye.slash"
+        )
     }
 }
