@@ -414,18 +414,34 @@ actor SessionStore {
 
     func setAlias(id: String, alias: String) throws -> AliasUpdateResult {
         guard records[id] != nil else { return .unknownSession }
-        guard try aliasStore.setAlias(alias, for: id) else { return .unchanged }
-        cache.dirtyIDs.insert(id)
-        persist()
+        let normalized = alias.titleSanitized
+        guard !normalized.isEmpty else { throw SessionAliasError.empty }
+        guard aliasStore.alias(for: id) != normalized else { return .unchanged }
+        try persistRedonationObligation(for: id)
+
+        // A failed alias write may leave one harmless extra re-donation queued;
+        // it must not erase the already-durable retry obligation.
+        _ = try aliasStore.setAlias(normalized, for: id)
         return .changed
     }
 
     func clearAlias(id: String) throws -> AliasUpdateResult {
         guard records[id] != nil else { return .unknownSession }
-        guard try aliasStore.clearAlias(for: id) else { return .unchanged }
-        cache.dirtyIDs.insert(id)
-        persist()
+        guard aliasStore.alias(for: id) != nil else { return .unchanged }
+        try persistRedonationObligation(for: id)
+        _ = try aliasStore.clearAlias(for: id)
         return .changed
+    }
+
+    private func persistRedonationObligation(for id: String) throws {
+        let wasDirty = cache.dirtyIDs.contains(id)
+        cache.dirtyIDs.insert(id)
+        do {
+            try persistCache()
+        } catch {
+            if !wasDirty { cache.dirtyIDs.remove(id) }
+            throw error
+        }
     }
 
     func aliases() -> [String: String] {
@@ -508,12 +524,16 @@ actor SessionStore {
 
     private func persist() {
         do {
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: cacheURL, options: .atomic)
+            try persistCache()
         } catch {
             NSLog("Spotion: cache persist failed: %@", error.localizedDescription)
         }
+    }
+
+    private func persistCache() throws {
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(cache)
+        try data.write(to: cacheURL, options: .atomic)
     }
 }

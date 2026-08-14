@@ -618,6 +618,49 @@ import Testing
         #expect(try await store.setAlias(id: "codex:missing", alias: "No") == .unknownSession)
     }
 
+    @Test func aliasChangesRequireDurableRedonationBeforeStateWrite() async throws {
+        let setEnv = try makeEnv()
+        try writeCodexSession(setEnv)
+        let codexID = "codex:\(CodexScannerTests.uuid)"
+        let setStore = makeStore(setEnv)
+        await setStore.bootstrap()
+        let setInitial = await setStore.refresh(enabledAgents: both)
+        await setStore.markIndexed(setInitial)
+
+        try FileManager.default.removeItem(at: setEnv.cacheURL)
+        try FileManager.default.createDirectory(
+            at: setEnv.cacheURL, withIntermediateDirectories: false)
+        var setFailed = false
+        do {
+            _ = try await setStore.setAlias(id: codexID, alias: "Must not persist")
+        } catch {
+            setFailed = true
+        }
+        #expect(setFailed)
+        #expect(await setStore.aliases().isEmpty)
+
+        let clearEnv = try makeEnv()
+        try writeClaudeSession(clearEnv)
+        let claudeID = "claude:\(ClaudeScannerTests.uuid)"
+        let clearStore = makeStore(clearEnv)
+        await clearStore.bootstrap()
+        let clearInitial = await clearStore.refresh(enabledAgents: both)
+        await clearStore.markIndexed(clearInitial)
+        #expect(try await clearStore.setAlias(id: claudeID, alias: "Keep on failure") == .changed)
+
+        try FileManager.default.removeItem(at: clearEnv.cacheURL)
+        try FileManager.default.createDirectory(
+            at: clearEnv.cacheURL, withIntermediateDirectories: false)
+        var clearFailed = false
+        do {
+            _ = try await clearStore.clearAlias(id: claudeID)
+        } catch {
+            clearFailed = true
+        }
+        #expect(clearFailed)
+        #expect(await clearStore.aliases() == [claudeID: "Keep on failure"])
+    }
+
     @Test func aliasesSurviveScanCacheResetAndPruneWithDeletedSession() async throws {
         let env = try makeEnv()
         try writeClaudeSession(env)
