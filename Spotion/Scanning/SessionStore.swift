@@ -299,11 +299,18 @@ actor SessionStore {
         rebuildRecords()
 
         // A failed enabled-root enumeration means the current record set is
-        // incomplete. In particular, a scan-cache reset followed by a
-        // transient permission failure must not erase otherwise valid aliases.
+        // incomplete. Disabled agents are also intentionally unverified: their
+        // cached records leave the active index, but user-authored aliases must
+        // survive so re-enabling the agent can restore them.
         if roots.allSatisfy({ !$0.enabled || $0.trustworthy }) {
+            let disabledPrefixes = scanners
+                .filter { !enabledAgents.contains($0.agent) }
+                .map { "\($0.agent.rawValue):" }
+            let disabledAliasIDs = aliasStore.aliases.keys.filter { id in
+                disabledPrefixes.contains { id.hasPrefix($0) }
+            }
             do {
-                try aliasStore.prune(validIDs: Set(records.keys))
+                try aliasStore.prune(validIDs: Set(records.keys).union(disabledAliasIDs))
             } catch {
                 NSLog("Spotion: stale alias prune failed: %@", error.localizedDescription)
             }

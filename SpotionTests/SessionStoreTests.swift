@@ -645,6 +645,34 @@ import Testing
         #expect(await afterDelete.aliases().isEmpty)
     }
 
+    @Test func aliasesSurviveAgentDisableAndReturnWhenReenabled() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env, title: "Agent title")
+        let id = "claude:\(ClaudeScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.setAlias(id: id, alias: "Persistent alias") == .changed)
+        let aliased = await store.refresh(enabledAgents: both)
+        await store.markIndexed(aliased)
+
+        let disabled = await store.refresh(enabledAgents: [.codex])
+        #expect(disabled.deletedIDs == [id])
+        #expect(await store.aliases() == [id: "Persistent alias"])
+        await store.markIndexed(disabled)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: [.codex])
+        #expect(await relaunched.aliases() == [id: "Persistent alias"])
+
+        let restored = await relaunched.refresh(enabledAgents: both)
+        #expect(restored.upserts.map(\.id) == [id])
+        #expect(await relaunched.titled(records: restored.upserts).first?.title == "Persistent alias")
+    }
+
     @Test func cacheResetPlusTransientEnumerationFailurePreservesAliases() async throws {
         let env = try makeEnv()
         try writeClaudeSession(env)
