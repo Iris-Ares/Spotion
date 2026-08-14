@@ -12,15 +12,20 @@ final class UIState {
     var lastIndexed: Date?
     var lastError: String?
     var isScanning = false
+    var pinned: [TitledSession] = []
     var recent: [TitledSession] = []
 }
 
 enum SpotionError: LocalizedError {
     case sessionNotFound(String)
+    case pinUpdateFailed(String)
+    case spotlightUpdatePending
 
     var errorDescription: String? {
         switch self {
         case .sessionNotFound(let id): "会话已不存在：\(id)"
+        case .pinUpdateFailed(let message): "无法保存会话置顶状态：\(message)"
+        case .spotlightUpdatePending: "置顶状态已保存，但 Spotlight 暂未响应；Spotion 将自动重试。"
         }
     }
 }
@@ -269,7 +274,9 @@ final class AppCoordinator {
         uiState.claudeCount = stats.claudeCount
         uiState.parseFailures = stats.parseFailures
         uiState.lastIndexed = Date()
-        uiState.recent = await store.allTitled(limit: 5)
+        let menu = await store.menuSections(recentLimit: 5)
+        uiState.pinned = menu.pinned
+        uiState.recent = menu.recent
         if !diff.isEmpty {
             NSLog(
                 "Spotion refresh: codex=%d claude=%d failures=%d upserts=%d deletes=%d in %.1fs",
@@ -326,6 +333,47 @@ final class AppCoordinator {
             return .terminal(SpotionSettings.terminal)
         case .nativeApp:
             return .nativeApp(appName: try await NativeAppLauncher.shared.resume(record))
+        }
+    }
+
+    // MARK: - Pinning
+
+    func pinSession(id: String) async throws {
+        try await updatePin(id: id, pinned: true)
+    }
+
+    func unpinSession(id: String) async throws {
+        try await updatePin(id: id, pinned: false)
+    }
+
+    private enum PinActionOutcome: Sendable {
+        case success
+        case notFound
+        case persistenceFailed(String)
+        case indexPending
+    }
+
+    private func updatePin(id: String, pinned: Bool) async throws {
+        let outcome: PinActionOutcome = await enqueue {
+            await self.ensureReady()
+            do {
+                switch try await self.store.setPinned(id: id, pinned: pinned) {
+                case .unknownSession:
+                    return .notFound
+                case .unchanged:
+                    return .success
+                case .changed:
+                    return await self.performRefreshAndApply() ? .success : .indexPending
+                }
+            } catch {
+                return .persistenceFailed(error.localizedDescription)
+            }
+        }
+        switch outcome {
+        case .success: return
+        case .notFound: throw SpotionError.sessionNotFound(id)
+        case .persistenceFailed(let message): throw SpotionError.pinUpdateFailed(message)
+        case .indexPending: throw SpotionError.spotlightUpdatePending
         }
     }
 

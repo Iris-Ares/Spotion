@@ -47,7 +47,7 @@ actor SpotlightIndexer {
             // past the closure-capture check.
             let batch = ItemBatch(items: sorted[start..<end].map { entity in
                 let attributes = entity.attributeSet
-                attributes.associateAppEntity(entity, priority: 0)
+                attributes.associateAppEntity(entity, priority: entity.donationPriority)
                 return CSSearchableItem(
                     uniqueIdentifier: entity.id,
                     domainIdentifier: "spotion.\(entity.agent.rawValue)",
