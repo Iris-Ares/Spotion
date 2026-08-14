@@ -593,6 +593,29 @@ import Testing
         #expect(try await store.setPinned(id: "codex:missing", pinned: true) == .unknownSession)
     }
 
+    @Test func pinChangePersistsRedonationAcrossRelaunch() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+
+        let id = "codex:\(CodexScannerTests.uuid)"
+        #expect(try await store.setPinned(id: id, pinned: true) == .changed)
+
+        // Model an exit after the pin update but before Spotlight acknowledges
+        // the donation. Both the pin and its retry obligation must survive.
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let pending = await relaunched.refresh(enabledAgents: both)
+        #expect(pending.upserts.map(\.id) == [id])
+        #expect(await relaunched.titled(records: pending.upserts).first?.isPinned == true)
+        await relaunched.markIndexed(pending)
+        #expect(await relaunched.refresh(enabledAgents: both).isEmpty)
+    }
+
     @Test func menuSectionsSortPinsAndDeduplicateRecents() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "Zulu")

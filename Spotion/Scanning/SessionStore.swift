@@ -412,11 +412,22 @@ actor SessionStore {
 
     func setPinned(id: String, pinned: Bool) throws -> PinUpdateResult {
         guard records[id] != nil else { return .unknownSession }
-        guard try pinnedStore.setPinned(pinned, id: id) else { return .unchanged }
-        // The existing dirty-id contract makes the targeted re-donation
-        // durable across Spotlight failures and app relaunches.
+        guard pinnedStore.contains(id) != pinned else { return .unchanged }
+
+        // Persist the re-donation obligation before committing the independent
+        // pin file. If the process exits between these writes, the next launch
+        // still reconciles Spotlight with whichever pin state reached disk.
         cache.dirtyIDs.insert(id)
-        persist()
+        do {
+            try persistCache()
+        } catch {
+            cache.dirtyIDs.remove(id)
+            throw error
+        }
+
+        // A failed pin write may leave one harmless extra re-donation queued;
+        // it must not erase the already-durable retry obligation.
+        _ = try pinnedStore.setPinned(pinned, id: id)
         return .changed
     }
 
@@ -508,12 +519,16 @@ actor SessionStore {
 
     private func persist() {
         do {
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: cacheURL, options: .atomic)
+            try persistCache()
         } catch {
             NSLog("Spotion: cache persist failed: %@", error.localizedDescription)
         }
+    }
+
+    private func persistCache() throws {
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(cache)
+        try data.write(to: cacheURL, options: .atomic)
     }
 }
