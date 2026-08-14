@@ -184,6 +184,36 @@ private struct IndexSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Hidden sessions") {
+                if state.hiddenSessions.isEmpty {
+                    Text("No sessions are hidden from Spotion.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.hiddenSessions) { session in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.title)
+                                Text("\(session.agent.displayName) · \(session.projectName)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Restore") {
+                                Task { @MainActor in
+                                    do {
+                                        try await AppCoordinator.shared.restoreSession(id: session.id)
+                                    } catch {
+                                        AppCoordinator.shared.uiState.lastError = error.localizedDescription
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Text("Hiding affects Spotion only. It never deletes, archives, renames, or edits the Codex or Claude source session.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("状态") {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
                 LabeledContent("Claude Code 会话", value: "\(state.claudeCount)")
