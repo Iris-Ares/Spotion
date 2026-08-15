@@ -122,6 +122,15 @@ struct ProjectExclusionStore: Sendable {
         return payload.paths.contains { ProjectPathPolicy.contains(root: $0, candidate: cwd) }
     }
 
+    func matchingExclusion(path rawPath: String) throws -> ProjectExclusion? {
+        try requireAvailable()
+        guard let path = ProjectPathPolicy.standardized(rawPath),
+              let storedPath = payload.paths.first(where: {
+                  ProjectPathPolicy.sameDirectory($0, path)
+              }) else { return nil }
+        return ProjectExclusion(path: storedPath)
+    }
+
     mutating func add(path rawPath: String) throws -> ProjectExclusion? {
         try requireAvailable()
         guard let path = ProjectPathPolicy.standardized(rawPath) else {
@@ -140,11 +149,8 @@ struct ProjectExclusionStore: Sendable {
     }
 
     mutating func remove(path rawPath: String) throws -> ProjectExclusion? {
-        try requireAvailable()
-        guard let path = ProjectPathPolicy.standardized(rawPath),
-              let index = payload.paths.firstIndex(where: {
-                  ProjectPathPolicy.sameDirectory($0, path)
-              }) else { return nil }
+        guard let exclusion = try matchingExclusion(path: rawPath),
+              let index = payload.paths.firstIndex(of: exclusion.path) else { return nil }
 
         let previous = payload
         let removed = payload.paths.remove(at: index)

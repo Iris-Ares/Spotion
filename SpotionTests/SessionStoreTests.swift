@@ -694,4 +694,32 @@ import Testing
         _ = await store.refresh(enabledAgents: [.codex])
         #expect(await store.projectExclusionList().map(\.path) == ["/work/client"])
     }
+
+    @Test func exclusionRemovalRequiresDurableRedonationBeforeClearingRule() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex])
+        await store.markIndexed(initial)
+        #expect(try await store.addProjectExclusion(path: "/tmp/proj"))
+        let excluded = await store.refresh(enabledAgents: [.codex])
+        await store.markIndexed(excluded)
+
+        // A directory at the cache file path makes the prerequisite atomic
+        // cache write fail while the independent exclusion store is writable.
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try FileManager.default.createDirectory(at: env.cacheURL, withIntermediateDirectories: false)
+        var removalFailed = false
+        do {
+            _ = try await store.removeProjectExclusion(path: "/tmp/proj")
+        } catch {
+            removalFailed = true
+        }
+        #expect(removalFailed)
+        #expect(await store.projectExclusionList().map(\.path) == ["/tmp/proj"])
+        #expect(await store.record(id: id) == nil)
+    }
 }

@@ -456,17 +456,36 @@ actor SessionStore {
     }
 
     func removeProjectExclusion(path: String) throws -> Bool {
-        let previouslyExcluded = Set(records.values.filter {
-            projectExclusions.excludes(cwd: $0.cwd)
-        }.map(\.id))
-        guard try projectExclusions.remove(path: path) != nil else { return false }
-
-        let newlyVisible = previouslyExcluded.filter { id in
-            guard let record = records[id] else { return false }
-            return !projectExclusions.excludes(cwd: record.cwd)
+        guard let removed = try projectExclusions.matchingExclusion(path: path) else {
+            return false
         }
+        let remainingPaths = projectExclusions.exclusions().map(\.path).filter {
+            !ProjectPathPolicy.sameDirectory($0, removed.path)
+        }
+        let newlyVisible = Set(records.values.filter { record in
+            projectExclusions.excludes(cwd: record.cwd)
+                && !remainingPaths.contains(where: {
+                    ProjectPathPolicy.contains(root: $0, candidate: record.cwd)
+                })
+        }.map(\.id))
+
+        // Make the targeted Spotlight re-donation obligation durable before
+        // clearing the independent policy rule. A crash between the two writes
+        // then leaves either an excluded session or a visible session queued
+        // for upsert, never a restored session that stays absent indefinitely.
+        let previousDirtyIDs = cache.dirtyIDs
         cache.dirtyIDs.formUnion(newlyVisible)
-        persist()
+        do {
+            try persistCache()
+        } catch {
+            cache.dirtyIDs = previousDirtyIDs
+            throw error
+        }
+
+        // If the independent policy write fails, the already-durable dirty
+        // IDs are harmless while the rule remains active and must be retained
+        // for a later successful removal attempt.
+        _ = try projectExclusions.remove(path: removed.path)
         return true
     }
 
@@ -495,12 +514,16 @@ actor SessionStore {
 
     private func persist() {
         do {
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: cacheURL, options: .atomic)
+            try persistCache()
         } catch {
             NSLog("Spotion: cache persist failed: %@", error.localizedDescription)
         }
+    }
+
+    private func persistCache() throws {
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(cache)
+        try data.write(to: cacheURL, options: .atomic)
     }
 }
