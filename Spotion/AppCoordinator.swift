@@ -1,4 +1,5 @@
 import AppKit
+import AppIntents
 import Foundation
 import Observation
 
@@ -32,6 +33,7 @@ final class AppCoordinator {
     static let shared = AppCoordinator()
 
     let store: SessionStore
+    let savedProjectStore: SavedProjectStore
     let indexer = SpotlightIndexer()
     let uiState = UIState()
 
@@ -54,6 +56,9 @@ final class AppCoordinator {
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
             codexScanner: CodexScanner(),
             claudeScanner: ClaudeScanner()
+        )
+        savedProjectStore = SavedProjectStore(
+            fileURL: appSupport.appendingPathComponent("saved-quick-create-projects-v1.json")
         )
     }
 
@@ -355,17 +360,45 @@ final class AppCoordinator {
 
     func recentProjects(limit: Int) async -> [ProjectEntity] {
         await ensureReady()
-        return await store.distinctProjects().prefix(limit)
-            .map { ProjectEntity(id: $0.cwd, name: $0.name) }
+        return await mergedProjects(limit: limit)
     }
 
     func matchingProjects(_ query: String, limit: Int) async -> [ProjectEntity] {
         await ensureReady()
-        let needle = query.lowercased()
-        return await store.distinctProjects()
-            .filter { $0.name.lowercased().contains(needle) || $0.cwd.lowercased().contains(needle) }
-            .prefix(limit)
-            .map { ProjectEntity(id: $0.cwd, name: $0.name) }
+        return await mergedProjects(matching: query, limit: limit)
+    }
+
+    func savedProjects() async -> [SavedProject] {
+        await savedProjectStore.projects()
+    }
+
+    func savedProjectStorageWarning() async -> String? {
+        await savedProjectStore.storageWarning()
+    }
+
+    func addSavedProject(path: String) async throws {
+        if try await savedProjectStore.add(path) {
+            SpotionShortcuts.updateAppShortcutParameters()
+        }
+    }
+
+    func removeSavedProject(path: String) async throws {
+        if try await savedProjectStore.remove(path) {
+            SpotionShortcuts.updateAppShortcutParameters()
+        }
+    }
+
+    func moveSavedProject(from source: Int, to destination: Int) async throws {
+        try await savedProjectStore.move(from: source, to: destination)
+        SpotionShortcuts.updateAppShortcutParameters()
+    }
+
+    private func mergedProjects(matching query: String? = nil, limit: Int) async -> [ProjectEntity] {
+        let saved = await savedProjectStore.projects()
+        let recent = await store.distinctProjects()
+        return QuickCreateProjectMerger.merge(
+            saved: saved, recent: recent, matching: query, limit: limit
+        ).map { ProjectEntity(id: $0.path, name: $0.name) }
     }
 
     func selfCheck(term: String) async -> Int {
