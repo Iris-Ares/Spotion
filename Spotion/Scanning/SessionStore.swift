@@ -32,6 +32,7 @@ actor SessionStore {
     private let cacheURL: URL
     private let codexScanner: CodexScanner?
     private let claudeScanner: ClaudeScanner?
+    private var projectExclusions: ProjectExclusionStore
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -43,15 +44,24 @@ actor SessionStore {
     /// is required.
     private var pendingFullRebuild = false
 
-    init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
+    init(
+        cacheURL: URL,
+        projectExclusionsURL: URL? = nil,
+        codexScanner: CodexScanner?,
+        claudeScanner: ClaudeScanner?
+    ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
         self.claudeScanner = claudeScanner
+        projectExclusions = ProjectExclusionStore(
+            url: projectExclusionsURL
+                ?? cacheURL.deletingLastPathComponent().appendingPathComponent("project-exclusions-v1.json"))
     }
 
     // MARK: - Lifecycle
 
     func bootstrap() {
+        projectExclusions.load()
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
@@ -284,23 +294,31 @@ actor SessionStore {
         }
 
         let currentIDs = Set(records.keys)
+        let visibleCurrentIDs: Set<String> = if projectExclusions.isAvailable {
+            Set(currentIDs.filter { id in
+                guard let record = records[id] else { return false }
+                return !projectExclusions.excludes(cwd: record.cwd)
+            })
+        } else {
+            []
+        }
         // Changed ids enter the dirty set and stay until markIndexed (donation
         // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
-        cache.dirtyIDs.formIntersection(currentIDs)
-        let upsertIDs = cache.dirtyIDs.union(currentIDs.subtracting(cache.indexedIDs))
+        cache.dirtyIDs.formIntersection(visibleCurrentIDs)
+        let upsertIDs = cache.dirtyIDs.union(visibleCurrentIDs.subtracting(cache.indexedIDs))
         let promptHydrationBlockedIDs = includeLaterPrompts ? Set(upsertIDs.filter {
             guard let path = records[$0]?.filePath else { return false }
             return cache.laterPromptPendingPaths.contains(path)
         }) : []
         let diff = SessionDiff(
             upserts: upsertIDs.subtracting(promptHydrationBlockedIDs).compactMap { records[$0] },
-            deletedIDs: Array(cache.indexedIDs.subtracting(currentIDs))
+            deletedIDs: Array(cache.indexedIDs.subtracting(visibleCurrentIDs))
         )
 
         lastStats = StoreStats(
-            codexCount: records.values.count(where: { $0.agent == .codex }),
-            claudeCount: records.values.count(where: { $0.agent == .claude }),
+            codexCount: visibleCurrentIDs.compactMap { records[$0] }.count(where: { $0.agent == .codex }),
+            claudeCount: visibleCurrentIDs.compactMap { records[$0] }.count(where: { $0.agent == .claude }),
             parseFailures: cache.entries.values.count(where: { $0.record == nil }),
             lastRefresh: Date()
         )
@@ -315,9 +333,12 @@ actor SessionStore {
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
-            if records[id] != nil {
+            if let record = records[id], !projectExclusions.excludes(cwd: record.cwd) {
                 cache.dirtyIDs.insert(id)
             } else {
+                // A system reindex request for an excluded id is evidence that
+                // Spotlight still has (or resurrected) it. Route it through
+                // the durable ghost-deletion queue instead of re-donating it.
                 unknown.append(id)
             }
         }
@@ -366,10 +387,15 @@ actor SessionStore {
 
     // MARK: - Queries
 
-    func record(id: String) -> SessionRecord? { records[id] }
+    func record(id: String) -> SessionRecord? {
+        guard let record = records[id], !projectExclusions.excludes(cwd: record.cwd) else {
+            return nil
+        }
+        return record
+    }
 
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
-        var result = Array(records.values)
+        var result = records.values.filter { !projectExclusions.excludes(cwd: $0.cwd) }
         if let query, !query.trimmingCharacters(in: .whitespaces).isEmpty {
             let needle = query.lowercased()
             result = result.filter {
@@ -385,7 +411,7 @@ actor SessionStore {
 
     func distinctProjects() -> [ProjectInfo] {
         var byCwd: [String: Date] = [:]
-        for record in records.values {
+        for record in records.values where !projectExclusions.excludes(cwd: record.cwd) {
             byCwd[record.cwd] = max(byCwd[record.cwd] ?? .distantPast, record.lastActivityAt)
         }
         return byCwd
@@ -412,6 +438,65 @@ actor SessionStore {
         titled(records: all(limit: limit, matching: query))
     }
 
+    // MARK: - Project exclusions
+
+    func addProjectExclusion(path: String) throws -> Bool {
+        let previouslyVisible = Set(records.values.filter {
+            !projectExclusions.excludes(cwd: $0.cwd)
+        }.map(\.id))
+        guard try projectExclusions.add(path: path) != nil else { return false }
+
+        let newlyExcluded = previouslyVisible.filter { id in
+            guard let record = records[id] else { return false }
+            return projectExclusions.excludes(cwd: record.cwd)
+        }
+        cache.dirtyIDs.subtract(newlyExcluded)
+        persist()
+        return true
+    }
+
+    func removeProjectExclusion(path: String) throws -> Bool {
+        guard let removed = try projectExclusions.matchingExclusion(path: path) else {
+            return false
+        }
+        let remainingPaths = projectExclusions.exclusions().map(\.path).filter {
+            !ProjectPathPolicy.sameDirectory($0, removed.path)
+        }
+        let newlyVisible = Set(records.values.filter { record in
+            projectExclusions.excludes(cwd: record.cwd)
+                && !remainingPaths.contains(where: {
+                    ProjectPathPolicy.contains(root: $0, candidate: record.cwd)
+                })
+        }.map(\.id))
+
+        // Make the targeted Spotlight re-donation obligation durable before
+        // clearing the independent policy rule. A crash between the two writes
+        // then leaves either an excluded session or a visible session queued
+        // for upsert, never a restored session that stays absent indefinitely.
+        let previousDirtyIDs = cache.dirtyIDs
+        cache.dirtyIDs.formUnion(newlyVisible)
+        do {
+            try persistCache()
+        } catch {
+            cache.dirtyIDs = previousDirtyIDs
+            throw error
+        }
+
+        // If the independent policy write fails, the already-durable dirty
+        // IDs are harmless while the rule remains active and must be retained
+        // for a later successful removal attempt.
+        _ = try projectExclusions.remove(path: removed.path)
+        return true
+    }
+
+    func projectExclusionList() -> [ProjectExclusion] {
+        projectExclusions.exclusions()
+    }
+
+    var exclusionStateMessage: String? {
+        projectExclusions.statusMessage
+    }
+
     func scanReport() -> String {
         var lines = [
             "Spotion scan report",
@@ -429,12 +514,16 @@ actor SessionStore {
 
     private func persist() {
         do {
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: cacheURL, options: .atomic)
+            try persistCache()
         } catch {
             NSLog("Spotion: cache persist failed: %@", error.localizedDescription)
         }
+    }
+
+    private func persistCache() throws {
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(cache)
+        try data.write(to: cacheURL, options: .atomic)
     }
 }
