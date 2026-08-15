@@ -22,5 +22,11 @@ struct SpotionShortcuts: AppShortcutsProvider {
             shortTitle: "Reindex Sessions",
             systemImageName: "arrow.clockwise"
         )
+        AppShortcut(
+            intent: CopySessionResumeCommandIntent(),
+            phrases: ["Copy a session resume command in \(.applicationName)"],
+            shortTitle: "Copy Resume Command",
+            systemImageName: "doc.on.clipboard"
+        )
     }
 }

@@ -329,6 +329,15 @@ final class AppCoordinator {
         }
     }
 
+    func copySessionResumeCommand(id: String) async throws -> (agent: AgentKind, projectName: String) {
+        await ensureReady()
+        guard let record = await store.record(id: id) else {
+            throw SpotionError.sessionNotFound(id)
+        }
+        try ResumeCommandCopier().copy(record, to: SystemPlainTextClipboard.shared)
+        return (record.agent, record.projectName)
+    }
+
     // MARK: - Entity query support (AppIntents)
 
     func entities(for identifiers: [String]) async -> [SessionEntity] {
