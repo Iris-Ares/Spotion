@@ -14,7 +14,7 @@ struct SavedProject: Identifiable, Sendable, Equatable {
 /// Standardizes paths without resolving symlinks and compares them according
 /// to the volume that owns the path. Missing paths fall back to the nearest
 /// existing ancestor's volume; case-sensitive is the conservative fallback.
-struct ProjectPathPolicy: Sendable {
+struct SavedProjectPathPolicy: Sendable {
     private let caseSensitiveNames: @Sendable (String) -> Bool
 
     init(caseSensitiveNames: @escaping @Sendable (String) -> Bool = Self.caseSensitiveNames) {
@@ -73,7 +73,7 @@ actor SavedProjectStore {
 
     private let fileURL: URL
     private let recoveryURL: URL
-    private let pathPolicy: ProjectPathPolicy
+    private let pathPolicy: SavedProjectPathPolicy
     private let directoryCheck: @Sendable (String) -> Bool
     private var didLoad = false
     private var paths: [String] = []
@@ -81,7 +81,7 @@ actor SavedProjectStore {
 
     init(
         fileURL: URL,
-        pathPolicy: ProjectPathPolicy = ProjectPathPolicy(),
+        pathPolicy: SavedProjectPathPolicy = SavedProjectPathPolicy(),
         directoryCheck: @escaping @Sendable (String) -> Bool = SavedProjectStore.directoryExists
     ) {
         self.fileURL = fileURL
@@ -225,7 +225,7 @@ enum QuickCreateProjectMerger {
         recent: [ProjectInfo],
         matching query: String? = nil,
         limit: Int,
-        pathPolicy: ProjectPathPolicy = ProjectPathPolicy()
+        pathPolicy: SavedProjectPathPolicy = SavedProjectPathPolicy()
     ) -> [QuickCreateProject] {
         var seen = Set<String>()
         var merged: [QuickCreateProject] = []

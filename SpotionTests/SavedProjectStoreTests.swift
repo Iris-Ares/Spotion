@@ -9,7 +9,7 @@ struct SavedProjectStoreTests {
     ) -> SavedProjectStore {
         SavedProjectStore(
             fileURL: root.appendingPathComponent("state/saved-projects.json"),
-            pathPolicy: ProjectPathPolicy(caseSensitiveNames: { _ in caseSensitive })
+            pathPolicy: SavedProjectPathPolicy(caseSensitiveNames: { _ in caseSensitive })
         )
     }
 
@@ -80,7 +80,7 @@ struct SavedProjectStoreTests {
 
     @Test
     func mergesSavedFirstThenUniqueRecentInExistingOrder() {
-        let policy = ProjectPathPolicy(caseSensitiveNames: { _ in false })
+        let policy = SavedProjectPathPolicy(caseSensitiveNames: { _ in false })
         let saved = [
             SavedProject(path: "/Work/Alpha", isAvailable: true),
             SavedProject(path: "/Work/Beta", isAvailable: true),
@@ -106,7 +106,7 @@ struct SavedProjectStoreTests {
     func standardizationAndActiveVolumeCaseBehaviorAreDeterministic() throws {
         let root = try TestSupport.makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
-        let policy = ProjectPathPolicy()
+        let policy = SavedProjectPathPolicy()
         let canonical = try policy.standardizedPath(root.appendingPathComponent("A/../B/").path)
         #expect(canonical == root.appendingPathComponent("B").path)
 
