@@ -1072,6 +1072,43 @@ import Testing
         #expect(retriedUpsert.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
     }
 
+    @Test func reindexRequestDeletesPolicyIneligibleCachedSession() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let id = "codex:\(CodexScannerTests.uuid)"
+        try setActivity(
+            now.addingTimeInterval(-40 * 86_400),
+            at: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel)
+        )
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex], historyWindow: .all, now: now)
+        await store.markIndexed(initial)
+
+        let shortened = await store.refresh(
+            enabledAgents: [.codex],
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(shortened.deletedIDs == [id])
+        await store.markIndexed(shortened)
+
+        // The record remains in the scan cache by design, but a later system
+        // reindex request must delete a stale Spotlight item rather than mark
+        // the ineligible record dirty and then produce no mutation.
+        #expect(await store.record(id: id) == nil)
+        #expect(await store.markDirty(ids: [id]) == [id])
+        await store.addPendingGhostDeletions([id])
+        #expect(await store.pendingGhostDeletions() == [id])
+        #expect(await store.refresh(
+            enabledAgents: [.codex],
+            historyWindow: .thirtyDays,
+            now: now
+        ).isEmpty)
+    }
+
     @Test func genuineActivityMakesAnOldSessionEligibleAgain() async throws {
         let env = try makeEnv()
         try writeCodexSession(env)
