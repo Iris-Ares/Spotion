@@ -19,23 +19,9 @@ final class TerminalLauncher: Sendable {
 
     func resume(_ record: SessionRecord) async throws {
         let binary = try resolver.resolve(record.agent)
-        let command: String
-        switch record.agent {
-        case .codex:
-            if let cwd = existingDirectory(record.cwd) {
-                // Official docs: --cd takes precedence over the saved session dir
-                command = "cd \(q(cwd)) && exec \(q(binary)) --cd \(q(cwd)) resume \(q(record.sessionID))"
-            } else {
-                // Original directory is gone: defer to codex's own saved-dir logic
-                command = "exec \(q(binary)) resume \(q(record.sessionID))"
-            }
-        case .claude:
-            // claude --resume has no cwd flag and session lookup is scoped to
-            // the process cwd → the cd is mandatory
-            guard let cwd = existingDirectory(record.cwd) else {
-                throw LaunchError(message: "会话目录已不存在：\(record.cwd)（claude --resume 必须在原目录运行）")
-            }
-            command = "cd \(q(cwd)) && exec \(q(binary)) --resume \(q(record.sessionID))"
+        let cwd = existingDirectory(record.cwd)
+        guard let command = ResumeCommandBuilder.command(for: record, binary: binary, existingCwd: cwd) else {
+            throw LaunchError(message: "会话目录已不存在：\(record.cwd)（claude --resume 必须在原目录运行）")
         }
         try await launch(shellCommand: command)
     }

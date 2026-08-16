@@ -9,9 +9,9 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
-    /// v6: later prompt preference and hydration state; v5: iconSources;
+    /// v7: source-home identity; v6: later prompt preference and hydration state; v5: iconSources;
     /// v4: pendingGhostDeletions; v3: dirtyIDs; v2: head expansion
-    static let currentVersion = 6
+    static let currentVersion = 7
 
     var version: Int = currentVersion
     /// key = absolute session file path

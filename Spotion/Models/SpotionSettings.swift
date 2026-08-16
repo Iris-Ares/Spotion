@@ -90,6 +90,18 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "searchLaterPrompts") }
     }
 
+    static func additionalAgentHomes(for agent: AgentKind) -> [String] {
+        let raw = d.stringArray(forKey: "additionalAgentHomes.\(agent.rawValue)") ?? []
+        return AgentHomePathPolicy.additionalPaths(raw, for: agent)
+    }
+
+    static func setAdditionalAgentHomes(_ paths: [String], for agent: AgentKind) {
+        d.set(
+            AgentHomePathPolicy.additionalPaths(paths, for: agent),
+            forKey: "additionalAgentHomes.\(agent.rawValue)"
+        )
+    }
+
     private static func nonEmpty(_ s: String?) -> String? {
         guard let s, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return s

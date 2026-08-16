@@ -30,8 +30,7 @@ struct TitledSession: Sendable, Hashable {
 /// title resolution, and diffing against the set of already-donated ids.
 actor SessionStore {
     private let cacheURL: URL
-    private let codexScanner: CodexScanner?
-    private let claudeScanner: ClaudeScanner?
+    private var scanners: [any SessionScanner]
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -45,8 +44,16 @@ actor SessionStore {
 
     init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
         self.cacheURL = cacheURL
-        self.codexScanner = codexScanner
-        self.claudeScanner = claudeScanner
+        self.scanners = [codexScanner as (any SessionScanner)?, claudeScanner].compactMap { $0 }
+    }
+
+    init(cacheURL: URL, scanners: [any SessionScanner]) {
+        self.cacheURL = cacheURL
+        self.scanners = scanners
+    }
+
+    func configureScanners(_ scanners: [any SessionScanner]) {
+        self.scanners = scanners
     }
 
     // MARK: - Lifecycle
@@ -132,20 +139,25 @@ actor SessionStore {
         // Resolve metadata-only re-donation triggers before file enumeration,
         // so opt-in prompt snippets (which are deliberately not persisted in
         // the scan cache) can be rehydrated in the same refresh.
-        if enabledAgents.contains(.codex), let codexScanner,
-           let newTitles = codexScanner.loadTitleIndex() {
-            var affected = Set<String>()
-            for (sessionID, name) in newTitles where cache.codexTitles[sessionID] != name {
-                affected.insert(sessionID)
+        if enabledAgents.contains(.codex) {
+            for codexScanner in scanners.compactMap({ $0 as? CodexScanner }) {
+                guard let newTitles = codexScanner.loadTitleIndex() else { continue }
+                let homeRecords = records.values.filter {
+                    $0.agent == .codex && $0.agentHomePath == codexScanner.agentHome.path
+                }
+                for record in homeRecords where newTitles[record.sessionID] == nil {
+                    if cache.codexTitles.removeValue(forKey: record.id) != nil {
+                        changedIDs.insert(record.id)
+                    }
+                }
+                for (sessionID, name) in newTitles {
+                    let id = codexScanner.recordID(sessionID: sessionID)
+                    if cache.codexTitles[id] != name, records[id] != nil {
+                        changedIDs.insert(id)
+                    }
+                    cache.codexTitles[id] = name
+                }
             }
-            for sessionID in cache.codexTitles.keys where newTitles[sessionID] == nil {
-                affected.insert(sessionID)
-            }
-            for sessionID in affected {
-                let id = SessionRecord.makeID(agent: .codex, sessionID: sessionID)
-                if records[id] != nil { changedIDs.insert(id) }
-            }
-            cache.codexTitles = newTitles
         }
 
         for (agent, fingerprint) in iconSources
@@ -169,14 +181,13 @@ actor SessionStore {
 
         struct RootState {
             var path: String
+            var agent: AgentKind
+            var agentHomePath: String
             var trustworthy: Bool  // enumeration result is reliable (not a suspected transient failure)
             var enabled: Bool
         }
         var roots: [RootState] = []
         var toParse: [(scanner: any SessionScanner, file: ScannedFile)] = []
-
-        let scanners: [any SessionScanner] = [codexScanner as (any SessionScanner)?, claudeScanner]
-            .compactMap { $0 }
 
         for scanner in scanners {
             // canonicalPath (realpath semantics): FileManager enumeration returns
@@ -184,19 +195,38 @@ actor SessionStore {
             // root must be canonicalized the same way for prefix matching to hold.
             // Do NOT use resolvingSymlinksInPath() — it strips the /private prefix
             // in the opposite direction.
-            let rootPath = (try? URL(fileURLWithPath: scanner.rootPath)
-                .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath) ?? scanner.rootPath
+            let resolvedRoot = try? URL(fileURLWithPath: scanner.rootPath)
+                .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
+            let rootPath = resolvedRoot.flatMap { $0.isEmpty ? nil : $0 } ?? scanner.rootPath
             guard enabledAgents.contains(scanner.agent) else {
-                roots.append(RootState(path: rootPath, trustworthy: true, enabled: false))
+                roots.append(RootState(
+                    path: rootPath,
+                    agent: scanner.agent,
+                    agentHomePath: scanner.agentHomePath,
+                    trustworthy: true,
+                    enabled: false
+                ))
                 continue
             }
             // nil = enumeration failed (permission blip etc.) → no deletions for
             // this root this cycle; [] = genuinely empty root, deletions proceed.
             guard let files = scanner.enumerateFiles() else {
-                roots.append(RootState(path: rootPath, trustworthy: false, enabled: true))
+                roots.append(RootState(
+                    path: rootPath,
+                    agent: scanner.agent,
+                    agentHomePath: scanner.agentHomePath,
+                    trustworthy: false,
+                    enabled: true
+                ))
                 continue
             }
-            roots.append(RootState(path: rootPath, trustworthy: true, enabled: true))
+            roots.append(RootState(
+                path: rootPath,
+                agent: scanner.agent,
+                agentHomePath: scanner.agentHomePath,
+                trustworthy: true,
+                enabled: true
+            ))
 
             for file in files {
                 seenPaths.insert(file.path)
@@ -254,7 +284,13 @@ actor SessionStore {
         // The prefix carries a "/" boundary so …/sessions cannot accidentally
         // match a sibling like …/sessionsXYZ.
         for path in cache.entries.keys where !seenPaths.contains(path) {
-            if let root = roots.first(where: { path.hasPrefix($0.path + "/") }),
+            let sourceRoot = cache.entries[path]?.record.flatMap { record in
+                roots.first {
+                    $0.agent == record.agent && $0.agentHomePath == record.agentHomePath
+                }
+            }
+            let root = sourceRoot ?? roots.first(where: { path.hasPrefix($0.path + "/") })
+            if let root,
                root.enabled, !root.trustworthy {
                 continue  // suspected transient failure — keep the entry
             }
@@ -271,6 +307,7 @@ actor SessionStore {
         // Rebuild uniformly from entries (handles winner selection among
         // multiple files sharing a session_id, and deletion fallback).
         rebuildRecords()
+        cache.codexTitles = cache.codexTitles.filter { records[$0.key] != nil }
 
         // A deleted/corrupted winning rollout may reveal an unchanged fallback
         // record that was decoded without private prompt text. Defer that
@@ -397,7 +434,7 @@ actor SessionStore {
     /// claude: tail title records > first prompt > project name.
     func displayTitle(for record: SessionRecord) -> String {
         let raw: String? = switch record.agent {
-        case .codex: cache.codexTitles[record.sessionID] ?? record.firstPrompt
+        case .codex: cache.codexTitles[record.id] ?? record.firstPrompt
         case .claude: record.fallbackTitle ?? record.firstPrompt
         }
         let sanitized = raw?.titleSanitized ?? ""

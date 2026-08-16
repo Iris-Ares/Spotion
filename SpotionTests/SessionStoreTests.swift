@@ -561,4 +561,88 @@ import Testing
         let d2 = await store.refresh(enabledAgents: [.codex])
         #expect(d2.deletedIDs == ["claude:\(ClaudeScannerTests.uuid)"])
     }
+
+    @Test func additionalHomesKeepDuplicateUUIDsDistinctAndUseTheirOwnTitles() async throws {
+        let env = try makeEnv()
+        let alternate = env.codexHome.deletingLastPathComponent().appendingPathComponent("codex-work")
+        try writeCodexSession(env, title: "Default title")
+        try TestSupport.write(
+            [CodexScannerTests.meta(), CodexScannerTests.userMessage("alternate prompt")]
+                .joined(separator: "\n") + "\n",
+            to: alternate.appendingPathComponent(CodexScannerTests.sessionRel)
+        )
+        try TestSupport.write(
+            "{\"id\":\"\(CodexScannerTests.uuid)\",\"thread_name\":\"Alternate title\"}\n",
+            to: alternate.appendingPathComponent("session_index.jsonl")
+        )
+
+        let store = SessionStore(cacheURL: env.cacheURL, scanners: [
+            CodexScanner(codexHome: env.codexHome),
+            CodexScanner(codexHome: alternate, isDefaultAgentHome: false),
+        ])
+        await store.bootstrap()
+        let diff = await store.refresh(enabledAgents: [.codex])
+
+        #expect(diff.upserts.count == 2)
+        #expect(Set(diff.upserts.map(\.id)).count == 2)
+        let defaultRecord = try #require(diff.upserts.first { $0.isDefaultAgentHome })
+        let alternateRecord = try #require(diff.upserts.first { !$0.isDefaultAgentHome })
+        #expect(defaultRecord.id == "codex:\(CodexScannerTests.uuid)")
+        #expect(alternateRecord.id.hasPrefix("codex:\(CodexScannerTests.uuid):home:"))
+        #expect(alternateRecord.agentHomePath == alternate.standardizedFileURL.path)
+        #expect(await store.displayTitle(for: defaultRecord) == "Default title")
+        #expect(await store.displayTitle(for: alternateRecord) == "Alternate title")
+    }
+
+    @Test func missingConfiguredHomePreservesCacheUntilConfigurationIsRemoved() async throws {
+        let env = try makeEnv()
+        let alternate = env.codexHome.deletingLastPathComponent().appendingPathComponent("codex-work")
+        try TestSupport.write(
+            [CodexScannerTests.meta(), CodexScannerTests.userMessage("alternate prompt")]
+                .joined(separator: "\n") + "\n",
+            to: alternate.appendingPathComponent(CodexScannerTests.sessionRel)
+        )
+        let additionalScanner = CodexScanner(codexHome: alternate, isDefaultAgentHome: false)
+        let store = SessionStore(cacheURL: env.cacheURL, scanners: [additionalScanner])
+        await store.bootstrap()
+        let indexed = await store.refresh(enabledAgents: [.codex])
+        let id = try #require(indexed.upserts.first?.id)
+        await store.markIndexed(indexed)
+
+        let unavailable = alternate.deletingLastPathComponent().appendingPathComponent("temporarily-unmounted")
+        try FileManager.default.moveItem(at: alternate, to: unavailable)
+        let missing = await store.refresh(enabledAgents: [.codex])
+        #expect(missing.isEmpty)
+        #expect(await store.record(id: id) != nil)
+
+        await store.configureScanners([])
+        let removed = await store.refresh(enabledAgents: [.codex])
+        #expect(removed.deletedIDs == [id])
+        #expect(await store.record(id: id) == nil)
+    }
+
+    @Test func additionalClaudeHomeKeepsMatchingUUIDSeparateFromDefault() async throws {
+        let env = try makeEnv()
+        let alternate = env.claudeHome.deletingLastPathComponent().appendingPathComponent("claude-work")
+        try writeClaudeSession(env)
+        try TestSupport.write(
+            ClaudeScannerTests.user("alternate Claude prompt") + "\n",
+            to: alternate.appendingPathComponent(
+                "projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl")
+        )
+
+        let store = SessionStore(cacheURL: env.cacheURL, scanners: [
+            ClaudeScanner(claudeHome: env.claudeHome),
+            ClaudeScanner(claudeHome: alternate, isDefaultAgentHome: false),
+        ])
+        await store.bootstrap()
+        let diff = await store.refresh(enabledAgents: [.claude])
+
+        #expect(diff.upserts.count == 2)
+        #expect(Set(diff.upserts.map(\.id)).count == 2)
+        #expect(diff.upserts.contains { $0.id == "claude:\(ClaudeScannerTests.uuid)" })
+        let additional = try #require(diff.upserts.first { !$0.isDefaultAgentHome })
+        #expect(additional.id.hasPrefix("claude:\(ClaudeScannerTests.uuid):home:"))
+        #expect(additional.agentHomePath == alternate.standardizedFileURL.path)
+    }
 }

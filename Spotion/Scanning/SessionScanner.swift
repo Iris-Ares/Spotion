@@ -24,6 +24,7 @@ enum ParseOutcome: Sendable {
 
 protocol SessionScanner: Sendable {
     var agent: AgentKind { get }
+    var agentHomePath: String { get }
     /// Scan root (used to attribute cache entries during the deletion diff).
     var rootPath: String { get }
     /// Stat only, no content reads.

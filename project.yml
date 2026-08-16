@@ -45,6 +45,8 @@ targets:
       - SpotionTests
       - Spotion/Models
       - Spotion/Scanning
+      - Spotion/Launch/ResumeCommandBuilder.swift
+      - Spotion/Launch/ShellQuoting.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ares.SpotionTests

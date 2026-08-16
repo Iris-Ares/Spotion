@@ -11,12 +11,20 @@ import Foundation
 /// ~/.codex/session_index.jsonl ({id, thread_name, updated_at}).
 struct CodexScanner: SessionScanner {
     let agent: AgentKind = .codex
+    let agentHome: URL
+    let isDefaultAgentHome: Bool
     let sessionsRoot: URL
     let indexURL: URL
 
     var rootPath: String { sessionsRoot.path }
+    var agentHomePath: String { agentHome.path }
 
-    init(codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")) {
+    init(
+        codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
+        isDefaultAgentHome: Bool = true
+    ) {
+        self.agentHome = codexHome.standardizedFileURL
+        self.isDefaultAgentHome = isDefaultAgentHome
         self.sessionsRoot = codexHome.appendingPathComponent("sessions")
         self.indexURL = codexHome.appendingPathComponent("session_index.jsonl")
     }
@@ -25,7 +33,10 @@ struct CodexScanner: SessionScanner {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            return []  // root missing: a legitimate empty result
+            // A configured additional home can be temporarily unmounted or
+            // inaccessible. Preserve its cached records until the user removes
+            // the configuration or the root can be enumerated reliably.
+            return isDefaultAgentHome ? [] : nil
         }
 
         // Any listing error mid-walk marks the whole result untrustworthy (nil),
@@ -132,9 +143,11 @@ struct CodexScanner: SessionScanner {
 
         let cwd = meta.cwd ?? FileManager.default.homeDirectoryForCurrentUser.path
         return .record(SessionRecord(
-            id: SessionRecord.makeID(agent: .codex, sessionID: sessionID),
+            id: recordID(sessionID: sessionID),
             agent: .codex,
             sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome,
             fallbackTitle: nil,
             firstPrompt: firstPrompt,
             laterPromptSnippets: [],
@@ -146,6 +159,15 @@ struct CodexScanner: SessionScanner {
             filePath: file.path,
             fileSize: file.size
         ))
+    }
+
+    func recordID(sessionID: String) -> String {
+        SessionRecord.makeID(
+            agent: .codex,
+            sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome
+        )
     }
 
     private func addingLaterPrompts(
@@ -190,6 +212,11 @@ struct CodexScanner: SessionScanner {
         struct Entry: Decodable {
             var id: String?
             var thread_name: String?
+        }
+        if !isDefaultAgentHome,
+           (!FileManager.default.fileExists(atPath: agentHome.path)
+            || !FileManager.default.isReadableFile(atPath: agentHome.path)) {
+            return nil
         }
         guard FileManager.default.fileExists(atPath: indexURL.path) else { return [:] }
         guard let lines = try? JSONLReader.headLines(of: indexURL, cap: 8 * 1024 * 1024) else { return nil }
