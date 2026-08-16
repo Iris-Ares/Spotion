@@ -43,6 +43,10 @@ import Testing
 
     private let both: Set<AgentKind> = [.codex, .claude]
 
+    private func setActivity(_ date: Date, at url: URL) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
+
     @Test func refreshUpsertsThenStable() async throws {
         let env = try makeEnv()
         try writeCodexSession(env)
@@ -560,5 +564,240 @@ import Testing
 
         let d2 = await store.refresh(enabledAgents: [.codex])
         #expect(d2.deletedIDs == ["claude:\(ClaudeScannerTests.uuid)"])
+    }
+
+    @Test func historyWindowTargetsDiffsAndFiltersSessionQueriesWithoutRemovingCache() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env, title: "Old Codex title")
+        try writeClaudeSession(env)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        try setActivity(
+            now.addingTimeInterval(-40 * 86_400),
+            at: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel)
+        )
+        try setActivity(
+            now.addingTimeInterval(-2 * 86_400),
+            at: env.claudeHome.appendingPathComponent(
+                "projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl")
+        )
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, historyWindow: .all, now: now)
+        #expect(initial.upserts.count == 2)
+        await store.markIndexed(initial)
+
+        let shortened = await store.refresh(
+            enabledAgents: both,
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(shortened.upserts.isEmpty)
+        #expect(shortened.deletedIDs == ["codex:\(CodexScannerTests.uuid)"])
+        #expect(await store.all().map(\.agent) == [.claude])
+        #expect(await store.allTitled(matching: "Old Codex").isEmpty)
+        #expect(await store.record(id: "codex:\(CodexScannerTests.uuid)") == nil)
+        let stats = await store.lastStats
+        #expect(stats.eligibleCount == 1)
+        #expect(stats.totalCount == 2)
+        let persisted = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        #expect(persisted.contains("codex:\(CodexScannerTests.uuid)"))
+        await store.markIndexed(shortened)
+        #expect(await store.refresh(
+            enabledAgents: both,
+            historyWindow: .thirtyDays,
+            now: now
+        ).isEmpty)
+
+        await store.forgetIndexed()
+        let rebuilt = await store.refresh(
+            enabledAgents: both,
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(rebuilt.upserts.map(\.agent) == [.claude])
+        await store.markIndexed(rebuilt)
+
+        let expanded = await store.refresh(
+            enabledAgents: both,
+            historyWindow: .ninetyDays,
+            now: now
+        )
+        #expect(expanded.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        #expect(expanded.deletedIDs.isEmpty)
+        await store.markIndexed(expanded)
+        #expect(await store.refresh(
+            enabledAgents: both,
+            historyWindow: .ninetyDays,
+            now: now
+        ).isEmpty)
+    }
+
+    @Test func failedHistoryWindowMutationsRetryAcrossRelaunches() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        try setActivity(
+            now.addingTimeInterval(-40 * 86_400),
+            at: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel)
+        )
+        try setActivity(
+            now.addingTimeInterval(-2 * 86_400),
+            at: env.claudeHome.appendingPathComponent(
+                "projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl")
+        )
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, historyWindow: .all, now: now)
+        await store.markIndexed(initial)
+
+        let failedDelete = await store.refresh(
+            enabledAgents: both,
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(failedDelete.deletedIDs == ["codex:\(CodexScannerTests.uuid)"])
+        // Simulate a failed Spotlight deletion by not calling markIndexed.
+
+        let relaunched = SessionStore(
+            cacheURL: env.cacheURL,
+            codexScanner: CodexScanner(codexHome: env.codexHome),
+            claudeScanner: ClaudeScanner(claudeHome: env.claudeHome),
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        await relaunched.bootstrap()
+        let retriedDelete = await relaunched.refresh(
+            enabledAgents: both,
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(retriedDelete.deletedIDs == failedDelete.deletedIDs)
+        await relaunched.markIndexed(retriedDelete)
+
+        let failedUpsert = await relaunched.refresh(
+            enabledAgents: both,
+            historyWindow: .ninetyDays,
+            now: now
+        )
+        #expect(failedUpsert.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        // Simulate a failed re-donation by not calling markIndexed.
+
+        let relaunchedAgain = SessionStore(
+            cacheURL: env.cacheURL,
+            codexScanner: CodexScanner(codexHome: env.codexHome),
+            claudeScanner: ClaudeScanner(claudeHome: env.claudeHome),
+            historyWindow: .ninetyDays,
+            now: now
+        )
+        await relaunchedAgain.bootstrap()
+        let retriedUpsert = await relaunchedAgain.refresh(
+            enabledAgents: both,
+            historyWindow: .ninetyDays,
+            now: now
+        )
+        #expect(retriedUpsert.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+    }
+
+    @Test func genuineActivityMakesAnOldSessionEligibleAgain() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let sessionURL = env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel)
+        try setActivity(now.addingTimeInterval(-31 * 86_400), at: sessionURL)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(
+            enabledAgents: [.codex],
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(initial.isEmpty)
+        #expect(await store.record(id: "codex:\(CodexScannerTests.uuid)") == nil)
+
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((CodexScannerTests.userMessage("new activity") + "\n").utf8))
+        try handle.close()
+        try setActivity(now, at: sessionURL)
+
+        let updated = await store.refresh(
+            enabledAgents: [.codex],
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(updated.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        #expect(await store.record(id: "codex:\(CodexScannerTests.uuid)") != nil)
+    }
+
+    @Test func transientEnumerationFailureDefersAgeBasedDeletion() async throws {
+        let env = try makeEnv()
+        try writeClaudeSession(env)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let sessionURL = env.claudeHome.appendingPathComponent(
+            "projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl")
+        try setActivity(now.addingTimeInterval(-31 * 86_400), at: sessionURL)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.claude], historyWindow: .all, now: now)
+        await store.markIndexed(initial)
+
+        let projectsRoot = env.claudeHome.appendingPathComponent("projects")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: projectsRoot.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: projectsRoot.path)
+        }
+
+        let deferred = await store.refresh(
+            enabledAgents: [.claude],
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(deferred.isEmpty)
+        #expect(await store.record(id: "claude:\(ClaudeScannerTests.uuid)") != nil)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: projectsRoot.path)
+        let confirmed = await store.refresh(
+            enabledAgents: [.claude],
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(confirmed.deletedIDs == ["claude:\(ClaudeScannerTests.uuid)"])
+    }
+
+    @Test func duplicateRolloutFallsOutsideWindowWhenRecentWinnerDisappears() async throws {
+        let env = try makeEnv()
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let oldRel = "sessions/2026/08/01/rollout-old-\(CodexScannerTests.uuid).jsonl"
+        let recentRel = "sessions/2026/08/05/rollout-recent-\(CodexScannerTests.uuid).jsonl"
+        let content = [CodexScannerTests.meta(), CodexScannerTests.userMessage("x")]
+            .joined(separator: "\n") + "\n"
+        let oldURL = try TestSupport.write(content, to: env.codexHome.appendingPathComponent(oldRel))
+        let recentURL = try TestSupport.write(content, to: env.codexHome.appendingPathComponent(recentRel))
+        try setActivity(now.addingTimeInterval(-40 * 86_400), at: oldURL)
+        try setActivity(now.addingTimeInterval(-2 * 86_400), at: recentURL)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(
+            enabledAgents: [.codex],
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(initial.upserts.count == 1)
+        await store.markIndexed(initial)
+
+        try FileManager.default.removeItem(at: recentURL)
+        let fallback = await store.refresh(
+            enabledAgents: [.codex],
+            historyWindow: .thirtyDays,
+            now: now
+        )
+        #expect(fallback.upserts.isEmpty)
+        #expect(fallback.deletedIDs == ["codex:\(CodexScannerTests.uuid)"])
     }
 }
