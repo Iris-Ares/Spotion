@@ -42,6 +42,24 @@ import Testing
         #expect(first != second)
     }
 
+    @Test func canonicalAliasOfDefaultHomeIsNotAddedAgain() throws {
+        let root = try TestSupport.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let realHome = root.appendingPathComponent("real-codex", isDirectory: true)
+        let defaultAlias = root.appendingPathComponent("default-codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: realHome, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: defaultAlias.path,
+            withDestinationPath: realHome.path
+        )
+
+        let paths = AgentHomePathPolicy.additionalPaths(
+            [realHome.path],
+            excludingDefaultPath: defaultAlias.path
+        )
+        #expect(paths.isEmpty)
+    }
+
     @Test func nativeAppsRejectAdditionalHomesWithActionableSourceContext() {
         let additional = makeRecord(home: "/tmp/work-codex", isDefault: false)
         let defaultHome = makeRecord(home: AgentHomePathPolicy.defaultPath(for: .codex), isDefault: true)

@@ -13,14 +13,21 @@ enum AgentHomePathPolicy {
         let expanded = (trimmed as NSString).expandingTildeInPath
         guard expanded.hasPrefix("/") else { return nil }
         let standardized = URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
-        let canonical = try? standardized
+        let resolved = FileManager.default.fileExists(atPath: standardized.path)
+            ? standardized.resolvingSymlinksInPath()
+            : standardized
+        let canonical = try? resolved
             .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
-        return canonical.flatMap { $0.isEmpty ? nil : $0 } ?? standardized.path
+        return canonical.flatMap { $0.isEmpty ? nil : $0 } ?? resolved.path
     }
 
     static func additionalPaths(_ rawPaths: [String], for agent: AgentKind) -> [String] {
-        let defaultPath = defaultPath(for: agent)
-        let defaultKey = comparisonKey(defaultPath)
+        additionalPaths(rawPaths, excludingDefaultPath: defaultPath(for: agent))
+    }
+
+    static func additionalPaths(_ rawPaths: [String], excludingDefaultPath defaultPath: String) -> [String] {
+        let normalizedDefault = normalize(defaultPath) ?? defaultPath
+        let defaultKey = comparisonKey(normalizedDefault)
         var seen = Set<String>()
         return rawPaths.compactMap(normalize).filter {
             comparisonKey($0) != defaultKey && seen.insert(comparisonKey($0)).inserted
