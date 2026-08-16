@@ -210,6 +210,8 @@ import Testing
         try TestSupport.write(
             Self.user("sub"),
             to: home.appendingPathComponent("projects/-tmp-proj/\(Self.uuid)/subagents/agent-1.jsonl"))
+        try TestSupport.write("SECRET", to: home.appendingPathComponent(".credentials.json"))
+        try TestSupport.write("plugin", to: home.appendingPathComponent("plugins/example.json"))
         let scanner = ClaudeScanner(claudeHome: home)
         #expect(scanner.enumerateFiles()?.count == 1)
     }

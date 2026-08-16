@@ -15,6 +15,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
+    var sourceHomeDisplayPath: String?
 
     init(_ titled: TitledSession) {
         let record = titled.record
@@ -28,6 +29,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
+        self.sourceHomeDisplayPath = record.sourceHomeDisplayPath
     }
 
     var displayRepresentation: DisplayRepresentation {
@@ -40,9 +42,14 @@ struct SessionEntity: AppEntity, IndexedEntity {
                 ? "chevron.left.forwardslash.chevron.right"
                 : "asterisk.circle")
         }
+        let subtitle = if let sourceHomeDisplayPath {
+            "\(agent.displayName) · \(projectName) · \(sourceHomeDisplayPath)"
+        } else {
+            "\(agent.displayName) · \(projectName)"
+        }
         return DisplayRepresentation(
             title: "\(title)",
-            subtitle: "\(agent.displayName) · \(projectName)",
+            subtitle: "\(subtitle)",
             image: image
         )
     }
@@ -58,6 +65,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         )
         var keywords = [projectName, agent.displayName, agent.rawValue, "session"]
         if let gitBranch { keywords.append(gitBranch) }
+        if let sourceHomeDisplayPath { keywords.append(sourceHomeDisplayPath) }
         keywords += cwd.split(separator: "/").map(String.init)
         attributes.keywords = keywords
         attributes.contentCreationDate = startedAt

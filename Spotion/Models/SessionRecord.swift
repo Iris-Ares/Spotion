@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
@@ -6,6 +7,11 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var agent: AgentKind
     /// Raw session id passed to `codex resume` / `claude --resume`
     var sessionID: String
+    /// Agent state directory that owns this transcript. Default-home sessions
+    /// retain their legacy identifiers; additional homes are namespaced by a
+    /// deterministic digest so matching UUIDs cannot collide in Spotlight.
+    var agentHomePath: String
+    var isDefaultAgentHome: Bool
     /// claude: title parsed from the tail title records; always nil for codex
     /// (codex titles live in session_index.jsonl)
     var fallbackTitle: String?
@@ -25,7 +31,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var fileSize: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case id, agent, sessionID, fallbackTitle, firstPrompt, cwd, projectName
+        case id, agent, sessionID, agentHomePath, isDefaultAgentHome
+        case fallbackTitle, firstPrompt, cwd, projectName
         case gitBranch, startedAt, lastActivityAt, filePath, fileSize
     }
 
@@ -33,6 +40,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         id: String,
         agent: AgentKind,
         sessionID: String,
+        agentHomePath: String? = nil,
+        isDefaultAgentHome: Bool = true,
         fallbackTitle: String?,
         firstPrompt: String?,
         laterPromptSnippets: [String],
@@ -47,6 +56,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         self.id = id
         self.agent = agent
         self.sessionID = sessionID
+        self.agentHomePath = agentHomePath ?? AgentHomePathPolicy.defaultPath(for: agent)
+        self.isDefaultAgentHome = isDefaultAgentHome
         self.fallbackTitle = fallbackTitle
         self.firstPrompt = firstPrompt
         self.laterPromptSnippets = laterPromptSnippets
@@ -64,6 +75,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         id = try values.decode(String.self, forKey: .id)
         agent = try values.decode(AgentKind.self, forKey: .agent)
         sessionID = try values.decode(String.self, forKey: .sessionID)
+        agentHomePath = try values.decode(String.self, forKey: .agentHomePath)
+        isDefaultAgentHome = try values.decode(Bool.self, forKey: .isDefaultAgentHome)
         fallbackTitle = try values.decodeIfPresent(String.self, forKey: .fallbackTitle)
         firstPrompt = try values.decodeIfPresent(String.self, forKey: .firstPrompt)
         laterPromptSnippets = []
@@ -81,6 +94,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(id, forKey: .id)
         try values.encode(agent, forKey: .agent)
         try values.encode(sessionID, forKey: .sessionID)
+        try values.encode(agentHomePath, forKey: .agentHomePath)
+        try values.encode(isDefaultAgentHome, forKey: .isDefaultAgentHome)
         try values.encodeIfPresent(fallbackTitle, forKey: .fallbackTitle)
         try values.encodeIfPresent(firstPrompt, forKey: .firstPrompt)
         try values.encode(cwd, forKey: .cwd)
@@ -92,8 +107,24 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(fileSize, forKey: .fileSize)
     }
 
-    static func makeID(agent: AgentKind, sessionID: String) -> String {
-        "\(agent.rawValue):\(sessionID)"
+    static func makeID(
+        agent: AgentKind,
+        sessionID: String,
+        agentHomePath: String? = nil,
+        isDefaultAgentHome: Bool = true
+    ) -> String {
+        let legacy = "\(agent.rawValue):\(sessionID)"
+        guard !isDefaultAgentHome else { return legacy }
+        let normalized = AgentHomePathPolicy.normalize(agentHomePath ?? "") ?? (agentHomePath ?? "")
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+            .prefix(12)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "\(legacy):home:\(digest)"
+    }
+
+    var sourceHomeDisplayPath: String? {
+        isDefaultAgentHome ? nil : AgentHomePathPolicy.displayPath(agentHomePath)
     }
 
     func spotlightContentDescription(includeLaterPrompts: Bool) -> String {

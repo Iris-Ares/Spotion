@@ -173,6 +173,8 @@ import Testing
         let home = try makeHome(sessionLines: [Self.meta()])
         try TestSupport.write("x", to: home.appendingPathComponent("sessions/2026/08/05/notes.txt"))
         try TestSupport.write("{}", to: home.appendingPathComponent("sessions/2026/08/05/other.jsonl"))
+        try TestSupport.write("SECRET", to: home.appendingPathComponent("auth.json"))
+        try TestSupport.write("plugin", to: home.appendingPathComponent("plugins/example.json"))
         let scanner = CodexScanner(codexHome: home)
         #expect(scanner.enumerateFiles()?.count == 1)
     }

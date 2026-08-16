@@ -52,8 +52,7 @@ final class AppCoordinator {
             .appendingPathComponent("Spotion", isDirectory: true)
         store = SessionStore(
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
-            codexScanner: CodexScanner(),
-            claudeScanner: ClaudeScanner()
+            scanners: Self.configuredScanners()
         )
     }
 
@@ -117,21 +116,37 @@ final class AppCoordinator {
     }
 
     private func startWatcher() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        watcher = FileWatcher(paths: [
-            home.appendingPathComponent(".codex/sessions").path,
-            home.appendingPathComponent(".codex/session_index.jsonl").path,
-            home.appendingPathComponent(".claude/projects").path,
-        ]) {
+        watcher?.stop()
+        watcher = FileWatcher(paths: Self.watchedPaths()) {
             Task { @MainActor in await AppCoordinator.shared.refreshAndApply() }
         }
         watcher?.start()
     }
 
+    private static func configuredScanners() -> [any SessionScanner] {
+        var scanners: [any SessionScanner] = [CodexScanner(), ClaudeScanner()]
+        scanners += SpotionSettings.additionalAgentHomes(for: .codex).map {
+            CodexScanner(codexHome: URL(fileURLWithPath: $0, isDirectory: true), isDefaultAgentHome: false)
+        }
+        scanners += SpotionSettings.additionalAgentHomes(for: .claude).map {
+            ClaudeScanner(claudeHome: URL(fileURLWithPath: $0, isDirectory: true), isDefaultAgentHome: false)
+        }
+        return scanners
+    }
+
+    private static func watchedPaths() -> [String] {
+        var paths: [String] = []
+        for scanner in configuredScanners() {
+            paths.append(scanner.rootPath)
+            if let codex = scanner as? CodexScanner { paths.append(codex.indexURL.path) }
+        }
+        return Array(Set(paths)).sorted()
+    }
+
     // MARK: - Scan → donate (everything goes through the serial pipeline)
 
     func refreshAndApply() async {
-        await enqueue { await self.performRefreshAndApply() }
+        _ = await enqueue { await self.performRefreshAndApply() }
     }
 
     /// Full rebuild with durable cross-launch retry: the obligation is
@@ -217,6 +232,7 @@ final class AppCoordinator {
     @discardableResult
     private func performRefreshAndApply() async -> Bool {
         await ensureReady()
+        await store.configureScanners(Self.configuredScanners())
         uiState.isScanning = true
         defer { uiState.isScanning = false }
         let started = Date()
@@ -310,6 +326,11 @@ final class AppCoordinator {
             }
             await self.performRefreshAndApply()
         }
+    }
+
+    func agentHomesChanged() async {
+        startWatcher()
+        await refreshAndApply()
     }
 
     // MARK: - Opening sessions
