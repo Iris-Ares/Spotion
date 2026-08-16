@@ -26,26 +26,35 @@ enum CodexSessionSource: Sendable {
 /// ~/.codex/session_index.jsonl ({id, thread_name, updated_at}).
 struct CodexScanner: SessionScanner {
     let agent: AgentKind = .codex
+    let agentHome: URL
+    let isDefaultAgentHome: Bool
     let sessionsRoot: URL
     let indexURL: URL
     let source: CodexSessionSource
 
     var rootPath: String { sessionsRoot.path }
+    var agentHomePath: String { agentHome.path }
 
     init(
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
-        source: CodexSessionSource = .active
+        source: CodexSessionSource = .active,
+        isDefaultAgentHome: Bool = true
     ) {
+        self.agentHome = codexHome.standardizedFileURL
+        self.isDefaultAgentHome = isDefaultAgentHome
         self.source = source
-        self.sessionsRoot = codexHome.appendingPathComponent(source.directoryName)
-        self.indexURL = codexHome.appendingPathComponent("session_index.jsonl")
+        self.sessionsRoot = self.agentHome.appendingPathComponent(source.directoryName)
+        self.indexURL = self.agentHome.appendingPathComponent("session_index.jsonl")
     }
 
     func enumerateFiles() -> [ScannedFile]? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            return []  // root missing: a legitimate empty result
+            // A configured additional home can be temporarily unmounted or
+            // inaccessible. Preserve its cached records until the user removes
+            // the configuration or the root can be enumerated reliably.
+            return isDefaultAgentHome ? [] : nil
         }
 
         // Any listing error mid-walk marks the whole result untrustworthy (nil),
@@ -204,9 +213,11 @@ struct CodexScanner: SessionScanner {
         let trimmedBranch = meta.git?.branch?.trimmingCharacters(in: .whitespacesAndNewlines)
         let gitBranch = trimmedBranch.flatMap { $0.isEmpty ? nil : $0 }
         return .record(SessionRecord(
-            id: SessionRecord.makeID(agent: .codex, sessionID: sessionID),
+            id: recordID(sessionID: sessionID),
             agent: .codex,
             sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome,
             fallbackTitle: nil,
             firstPrompt: firstPrompt,
             laterPromptSnippets: [],
@@ -220,6 +231,15 @@ struct CodexScanner: SessionScanner {
             filePath: file.path,
             fileSize: file.size
         ))
+    }
+
+    func recordID(sessionID: String) -> String {
+        SessionRecord.makeID(
+            agent: .codex,
+            sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome
+        )
     }
 
     private func addingTransientMetadata(
@@ -306,6 +326,11 @@ struct CodexScanner: SessionScanner {
         struct Entry: Decodable {
             var id: String?
             var thread_name: String?
+        }
+        if !isDefaultAgentHome,
+           (!FileManager.default.fileExists(atPath: agentHome.path)
+            || !FileManager.default.isReadableFile(atPath: agentHome.path)) {
+            return nil
         }
         guard FileManager.default.fileExists(atPath: indexURL.path) else { return [:] }
         guard let lines = try? JSONLReader.headLines(of: indexURL, cap: 8 * 1024 * 1024) else { return nil }

@@ -21,6 +21,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
+    var sourceHomeDisplayPath: String?
 
     init(_ titled: TitledSession) {
         let record = titled.record
@@ -39,6 +40,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
+        self.sourceHomeDisplayPath = record.sourceHomeDisplayPath
     }
 
     var displayRepresentation: DisplayRepresentation {
@@ -51,9 +53,10 @@ struct SessionEntity: AppEntity, IndexedEntity {
                 ? "chevron.left.forwardslash.chevron.right"
                 : "asterisk.circle")
         }
-        let subtitle = isArchived
-            ? "Archived · \(agent.displayName) · \(projectName)"
-            : "\(agent.displayName) · \(projectName)"
+        var subtitleParts = [agent.displayName, projectName]
+        if isArchived { subtitleParts.insert("Archived", at: 0) }
+        if let sourceHomeDisplayPath { subtitleParts.append(sourceHomeDisplayPath) }
+        let subtitle = subtitleParts.joined(separator: " · ")
         return DisplayRepresentation(
             title: "\(title)",
             subtitle: "\(subtitle)",
@@ -86,6 +89,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
             gitBranch: gitBranch,
             cwd: cwd,
             sourceTitle: sourceTitle == title ? nil : sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             touchedFilePaths: touchedFilePaths,
             includeTouchedFiles: SpotionSettings.searchTouchedFiles,
             isArchived: isArchived

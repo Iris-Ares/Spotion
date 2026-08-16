@@ -5,12 +5,16 @@ import Testing
     private func record(
         agent: AgentKind,
         id: String = "37820960-9057-4bd4-9c9f-47cfa12b9bf0",
-        cwd: String = "/tmp/project"
+        cwd: String = "/tmp/project",
+        home: String? = nil,
+        isDefaultHome: Bool = true
     ) -> SessionRecord {
         SessionRecord(
             id: SessionRecord.makeID(agent: agent, sessionID: id),
             agent: agent,
             sessionID: id,
+            agentHomePath: home,
+            isDefaultAgentHome: isDefaultHome,
             fallbackTitle: nil,
             firstPrompt: "prompt",
             laterPromptSnippets: [],
@@ -93,5 +97,38 @@ import Testing
         #expect(try SessionLaunchCommand.resume(
             claude, binary: "/opt/bin/claude", existingDirectory: claude.cwd
         ) == "cd '/tmp/project' && exec '/opt/bin/claude' --resume '37820960-9057-4bd4-9c9f-47cfa12b9bf0'")
+    }
+
+    @Test func alternateCodexHomeScopesResumeForkAndCopiedCommand() throws {
+        let source = record(
+            agent: .codex,
+            cwd: "/tmp/project's work",
+            home: "/tmp/-work profile's Codex",
+            isDefaultHome: false)
+        let executable = "env 'CODEX_HOME=/tmp/-work profile'\''s Codex' '/Applications/Agent Tools/codex'"
+
+        let resume = try SessionLaunchCommand.resume(
+            source, binary: "/Applications/Agent Tools/codex", existingDirectory: source.cwd)
+        let fork = try SessionLaunchCommand.fork(
+            source, binary: "/Applications/Agent Tools/codex", existingDirectory: source.cwd)
+
+        #expect(resume.contains("exec \(executable) --cd '/tmp/project'\''s work' resume"))
+        #expect(fork.contains("exec \(executable) --cd '/tmp/project'\''s work' fork --"))
+        #expect(!resume.contains("export CODEX_HOME"))
+    }
+
+    @Test func alternateClaudeHomeScopesResumeAndFork() throws {
+        let source = record(
+            agent: .claude,
+            home: "/tmp/Claude 配置",
+            isDefaultHome: false)
+        let executable = "env 'CLAUDE_CONFIG_DIR=/tmp/Claude 配置' '/usr/local/bin/claude'"
+
+        #expect(try SessionLaunchCommand.resume(
+            source, binary: "/usr/local/bin/claude", existingDirectory: source.cwd
+        ).contains("exec \(executable) --resume"))
+        #expect(try SessionLaunchCommand.fork(
+            source, binary: "/usr/local/bin/claude", existingDirectory: source.cwd
+        ).contains("exec \(executable) --resume="))
     }
 }

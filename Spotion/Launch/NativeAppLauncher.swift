@@ -27,6 +27,9 @@ final class NativeAppLauncher: Sendable {
     /// was deleted is still openable here.
     @MainActor
     func resume(_ record: SessionRecord) async throws -> String {
+        if let reason = NativeAppSourcePolicy.unsupportedReason(for: record) {
+            throw LaunchError(message: reason)
+        }
         guard let url = NativeAppLink.url(agent: record.agent, sessionID: record.sessionID) else {
             throw LaunchError(
                 message: "无法为该会话生成桌面应用链接（会话 ID 不是标准 UUID：\(record.sessionID)）。可在 Spotion 设置里把打开方式改回终端 CLI。")

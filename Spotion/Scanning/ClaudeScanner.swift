@@ -13,11 +13,19 @@ import Foundation
 /// every decode is defensive.
 struct ClaudeScanner: SessionScanner {
     let agent: AgentKind = .claude
+    let agentHome: URL
+    let isDefaultAgentHome: Bool
     let projectsRoot: URL
 
     var rootPath: String { projectsRoot.path }
+    var agentHomePath: String { agentHome.path }
 
-    init(claudeHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")) {
+    init(
+        claudeHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude"),
+        isDefaultAgentHome: Bool = true
+    ) {
+        self.agentHome = claudeHome.standardizedFileURL
+        self.isDefaultAgentHome = isDefaultAgentHome
         self.projectsRoot = claudeHome.appendingPathComponent("projects")
     }
 
@@ -26,7 +34,7 @@ struct ClaudeScanner: SessionScanner {
         var isDirectory: ObjCBool = false
         guard fm.fileExists(atPath: projectsRoot.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            return []  // root missing: a legitimate empty result
+            return isDefaultAgentHome ? [] : nil
         }
         guard let dirs = try? fm.contentsOfDirectory(
             at: projectsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
@@ -182,9 +190,11 @@ struct ClaudeScanner: SessionScanner {
         let sessionID = ((file.path as NSString).lastPathComponent as NSString).deletingPathExtension
 
         return .record(SessionRecord(
-            id: SessionRecord.makeID(agent: .claude, sessionID: sessionID),
+            id: recordID(sessionID: sessionID),
             agent: .claude,
             sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome,
             fallbackTitle: titles.custom ?? titles.ai ?? titles.lastPrompt,
             firstPrompt: firstPrompt,
             laterPromptSnippets: [],
@@ -197,6 +207,15 @@ struct ClaudeScanner: SessionScanner {
             filePath: file.path,
             fileSize: file.size
         ))
+    }
+
+    func recordID(sessionID: String) -> String {
+        SessionRecord.makeID(
+            agent: .claude,
+            sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome
+        )
     }
 
     private func addingTransientMetadata(
