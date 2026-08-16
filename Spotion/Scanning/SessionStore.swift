@@ -347,13 +347,13 @@ actor SessionStore {
     }
 
     /// Called when the system (Core Spotlight delegate) requests specific ids:
-    /// known ids are forced into the dirty set so the next refresh must upsert
-    /// them; returns the ids that no longer exist locally (the caller should
-    /// delete those from the index directly).
+    /// visible ids are forced into the dirty set so the next refresh must
+    /// upsert them; missing or policy-ineligible ids are returned so the caller
+    /// can durably delete any stale Spotlight item directly.
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
-            if records[id] != nil {
+            if visibleIDs.contains(id), records[id] != nil {
                 cache.dirtyIDs.insert(id)
             } else {
                 unknown.append(id)
