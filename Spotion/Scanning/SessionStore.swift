@@ -9,6 +9,8 @@ struct SessionDiff: Sendable {
 struct StoreStats: Sendable {
     var codexCount = 0
     var claudeCount = 0
+    var eligibleCount = 0
+    var totalCount = 0
     var parseFailures = 0
     var lastRefresh: Date?
 }
@@ -36,6 +38,11 @@ actor SessionStore {
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
     private var records: [String: SessionRecord] = [:]
+    /// Query visibility is updated from the same frozen clock value used to
+    /// derive the durable Spotlight diff for the current refresh.
+    private var historyWindow: SpotlightHistoryWindow
+    private var historyReferenceDate: Date
+    private var visibleIDs = Set<String>()
     private(set) var lastStats = StoreStats()
     /// A cache file exists on disk but is unusable (version mismatch / decode
     /// failure): the old indexedIDs are gone, so sessions deleted before the
@@ -43,10 +50,18 @@ actor SessionStore {
     /// is required.
     private var pendingFullRebuild = false
 
-    init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
+    init(
+        cacheURL: URL,
+        codexScanner: CodexScanner?,
+        claudeScanner: ClaudeScanner?,
+        historyWindow: SpotlightHistoryWindow = .all,
+        now: Date = Date()
+    ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
         self.claudeScanner = claudeScanner
+        self.historyWindow = historyWindow
+        historyReferenceDate = now
     }
 
     // MARK: - Lifecycle
@@ -62,6 +77,7 @@ actor SessionStore {
         }
         cache = loaded
         rebuildRecords()
+        updateVisibleIDs()
     }
 
     /// Read and clear the full-rebuild flag (consumed once by the coordinator
@@ -101,8 +117,12 @@ actor SessionStore {
     func refresh(
         enabledAgents: Set<AgentKind>,
         iconSources: [AgentKind: String] = [:],
-        includeLaterPrompts: Bool = false
+        includeLaterPrompts: Bool = false,
+        historyWindow: SpotlightHistoryWindow = .all,
+        now: Date = Date()
     ) async -> SessionDiff {
+        self.historyWindow = historyWindow
+        historyReferenceDate = now
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
         var hydratedPromptPaths = Set<String>()
@@ -284,38 +304,56 @@ actor SessionStore {
         }
 
         let currentIDs = Set(records.keys)
+        let eligibleIDs = Set(records.values.lazy.filter {
+            historyWindow.contains(lastActivityAt: $0.lastActivityAt, now: now)
+        }.map(\.id))
+        // If an enabled root could not be enumerated, its cached activity time
+        // may be stale. Keep already-indexed items visible until a trustworthy
+        // pass can confirm that they are genuinely outside the window.
+        let untrustworthyRootPaths = roots
+            .filter { $0.enabled && !$0.trustworthy }
+            .map(\.path)
+        let protectedIndexedIDs = Set(records.values.lazy.filter { record in
+            self.cache.indexedIDs.contains(record.id) && untrustworthyRootPaths.contains { root in
+                record.filePath.hasPrefix(root + "/")
+            }
+        }.map(\.id))
+        visibleIDs = eligibleIDs.union(protectedIndexedIDs)
         // Changed ids enter the dirty set and stay until markIndexed (donation
         // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
         cache.dirtyIDs.formIntersection(currentIDs)
-        let upsertIDs = cache.dirtyIDs.union(currentIDs.subtracting(cache.indexedIDs))
+        let upsertIDs = cache.dirtyIDs.union(eligibleIDs.subtracting(cache.indexedIDs))
+            .intersection(eligibleIDs)
         let promptHydrationBlockedIDs = includeLaterPrompts ? Set(upsertIDs.filter {
             guard let path = records[$0]?.filePath else { return false }
             return cache.laterPromptPendingPaths.contains(path)
         }) : []
         let diff = SessionDiff(
             upserts: upsertIDs.subtracting(promptHydrationBlockedIDs).compactMap { records[$0] },
-            deletedIDs: Array(cache.indexedIDs.subtracting(currentIDs))
+            deletedIDs: Array(cache.indexedIDs.subtracting(visibleIDs))
         )
 
         lastStats = StoreStats(
             codexCount: records.values.count(where: { $0.agent == .codex }),
             claudeCount: records.values.count(where: { $0.agent == .claude }),
+            eligibleCount: visibleIDs.count,
+            totalCount: records.count,
             parseFailures: cache.entries.values.count(where: { $0.record == nil }),
-            lastRefresh: Date()
+            lastRefresh: now
         )
         persist()
         return diff
     }
 
     /// Called when the system (Core Spotlight delegate) requests specific ids:
-    /// known ids are forced into the dirty set so the next refresh must upsert
-    /// them; returns the ids that no longer exist locally (the caller should
-    /// delete those from the index directly).
+    /// visible ids are forced into the dirty set so the next refresh must
+    /// upsert them; missing or policy-ineligible ids are returned so the caller
+    /// can durably delete any stale Spotlight item directly.
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
-            if records[id] != nil {
+            if visibleIDs.contains(id), records[id] != nil {
                 cache.dirtyIDs.insert(id)
             } else {
                 unknown.append(id)
@@ -366,10 +404,12 @@ actor SessionStore {
 
     // MARK: - Queries
 
-    func record(id: String) -> SessionRecord? { records[id] }
+    func record(id: String) -> SessionRecord? {
+        visibleIDs.contains(id) ? records[id] : nil
+    }
 
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
-        var result = Array(records.values)
+        var result = visibleIDs.compactMap { records[$0] }
         if let query, !query.trimmingCharacters(in: .whitespaces).isEmpty {
             let needle = query.lowercased()
             result = result.filter {
@@ -436,5 +476,11 @@ actor SessionStore {
         } catch {
             NSLog("Spotion: cache persist failed: %@", error.localizedDescription)
         }
+    }
+
+    private func updateVisibleIDs() {
+        visibleIDs = Set(records.values.lazy.filter {
+            self.historyWindow.contains(lastActivityAt: $0.lastActivityAt, now: self.historyReferenceDate)
+        }.map(\.id))
     }
 }

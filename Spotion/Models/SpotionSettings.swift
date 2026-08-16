@@ -90,6 +90,14 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "searchLaterPrompts") }
     }
 
+    /// Missing or unknown values preserve the pre-feature behavior.
+    static var spotlightHistoryWindow: SpotlightHistoryWindow {
+        get {
+            SpotlightHistoryWindow(rawValue: d.string(forKey: "spotlightHistoryWindow") ?? "") ?? .all
+        }
+        set { d.set(newValue.rawValue, forKey: "spotlightHistoryWindow") }
+    }
+
     private static func nonEmpty(_ s: String?) -> String? {
         guard let s, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return s
