@@ -7,6 +7,8 @@ import Observation
 @Observable
 final class UIState {
     var codexCount = 0
+    var archivedCodexCount = 0
+    var archiveConflicts = 0
     var claudeCount = 0
     var parseFailures = 0
     var lastIndexed: Date?
@@ -17,10 +19,12 @@ final class UIState {
 
 enum SpotionError: LocalizedError {
     case sessionNotFound(String)
+    case unarchiveCancelled
 
     var errorDescription: String? {
         switch self {
         case .sessionNotFound(let id): "会话已不存在：\(id)"
+        case .unarchiveCancelled: "已取消；Codex 会话仍保持归档状态。"
         }
     }
 }
@@ -53,6 +57,7 @@ final class AppCoordinator {
         store = SessionStore(
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
             codexScanner: CodexScanner(),
+            archivedCodexScanner: CodexScanner(source: .archived),
             claudeScanner: ClaudeScanner()
         )
     }
@@ -118,11 +123,7 @@ final class AppCoordinator {
 
     private func startWatcher() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        watcher = FileWatcher(paths: [
-            home.appendingPathComponent(".codex/sessions").path,
-            home.appendingPathComponent(".codex/session_index.jsonl").path,
-            home.appendingPathComponent(".claude/projects").path,
-        ]) {
+        watcher = FileWatcher(paths: SessionWatchPaths.all(home: home)) {
             Task { @MainActor in await AppCoordinator.shared.refreshAndApply() }
         }
         watcher?.start()
@@ -232,7 +233,8 @@ final class AppCoordinator {
         let diff = await store.refresh(
             enabledAgents: enabled,
             iconSources: iconSources,
-            includeLaterPrompts: SpotionSettings.searchLaterPrompts
+            includeLaterPrompts: SpotionSettings.searchLaterPrompts,
+            includeArchivedCodex: SpotionSettings.includeArchivedCodexSessions
         )
         do {
             if !diff.upserts.isEmpty {
@@ -266,6 +268,8 @@ final class AppCoordinator {
 
         let stats = await store.lastStats
         uiState.codexCount = stats.codexCount
+        uiState.archivedCodexCount = stats.archivedCodexCount
+        uiState.archiveConflicts = stats.archiveConflicts
         uiState.claudeCount = stats.claudeCount
         uiState.parseFailures = stats.parseFailures
         uiState.lastIndexed = Date()
@@ -315,11 +319,38 @@ final class AppCoordinator {
     // MARK: - Opening sessions
 
     @discardableResult
-    func openSession(id: String) async throws -> LaunchDestination {
+    func openSession(id: String, archivedConfirmed: Bool = false) async throws -> LaunchDestination {
         await ensureReady()
         guard let record = await store.record(id: id) else {
             throw SpotionError.sessionNotFound(id)
         }
+        if record.isArchived {
+            if !archivedConfirmed, !confirmUnarchive(record) {
+                throw SpotionError.unarchiveCancelled
+            }
+            let gate = ArchivedSessionResumeGate(
+                unarchive: { sessionID in
+                    try await CodexUnarchiver.shared.unarchive(sessionID: sessionID)
+                },
+                refreshRecord: { id in
+                    await self.refreshAndApply()
+                    return await self.store.record(id: id)
+                },
+                dispatch: { activeRecord in
+                    try await self.dispatch(activeRecord)
+                }
+            )
+            return try await gate.resume(record)
+        }
+        return try await dispatch(record)
+    }
+
+    func isArchivedSession(id: String) async -> Bool {
+        await ensureReady()
+        return await store.record(id: id)?.isArchived == true
+    }
+
+    private func dispatch(_ record: SessionRecord) async throws -> LaunchDestination {
         switch SpotionSettings.launchTarget(for: record.agent) {
         case .cli:
             try await TerminalLauncher.shared.resume(record)
@@ -327,6 +358,16 @@ final class AppCoordinator {
         case .nativeApp:
             return .nativeApp(appName: try await NativeAppLauncher.shared.resume(record))
         }
+    }
+
+    private func confirmUnarchive(_ record: SessionRecord) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unarchive Codex session?"
+        alert.informativeText = "Spotion will run Codex's unarchive command before opening “\(record.projectName)”."
+        alert.addButton(withTitle: "Unarchive and Open")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     // MARK: - Entity query support (AppIntents)

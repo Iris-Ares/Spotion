@@ -12,6 +12,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var agent: AgentKind
     var firstPromptSnippet: String?
     var laterPromptSnippets: [String]
+    var isArchived: Bool
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
@@ -25,6 +26,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.agent = record.agent
         self.firstPromptSnippet = record.firstPrompt
         self.laterPromptSnippets = record.laterPromptSnippets
+        self.isArchived = record.isArchived
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
@@ -40,9 +42,12 @@ struct SessionEntity: AppEntity, IndexedEntity {
                 ? "chevron.left.forwardslash.chevron.right"
                 : "asterisk.circle")
         }
+        let subtitle = isArchived
+            ? "Archived · \(agent.displayName) · \(projectName)"
+            : "\(agent.displayName) · \(projectName)"
         return DisplayRepresentation(
             title: "\(title)",
-            subtitle: "\(agent.displayName) · \(projectName)",
+            subtitle: "\(subtitle)",
             image: image
         )
     }
@@ -57,6 +62,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
             includeLaterPrompts: SpotionSettings.searchLaterPrompts
         )
         var keywords = [projectName, agent.displayName, agent.rawValue, "session"]
+        if isArchived { keywords.append("archived") }
         if let gitBranch { keywords.append(gitBranch) }
         keywords += cwd.split(separator: "/").map(String.init)
         attributes.keywords = keywords

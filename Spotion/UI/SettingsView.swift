@@ -169,6 +169,7 @@ private struct AdvancedSettingsTab: View {
 private struct IndexSettingsTab: View {
     private var state = AppCoordinator.shared.uiState
     @State private var searchLaterPrompts = SpotionSettings.searchLaterPrompts
+    @State private var includeArchivedCodex = SpotionSettings.includeArchivedCodexSessions
     @State private var checkTerm = ""
     @State private var checkResult: String?
 
@@ -183,9 +184,23 @@ private struct IndexSettingsTab: View {
                 Text("Off by default. When enabled, up to five recent user prompts per session are stored only in the local macOS Spotlight index. Assistant, tool, thinking, command-wrapper, sidechain, and attachment content is excluded.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("Include archived Codex sessions", isOn: $includeArchivedCodex)
+                    .onChange(of: includeArchivedCodex) {
+                        SpotionSettings.includeArchivedCodexSessions = includeArchivedCodex
+                        Task { await AppCoordinator.shared.refreshAndApply() }
+                    }
+                Text("Off by default. Archived results are visibly labeled and require confirmation before Spotion asks Codex to unarchive and open them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("状态") {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
+                if state.archivedCodexCount > 0 {
+                    LabeledContent("Archived Codex", value: "\(state.archivedCodexCount)")
+                }
+                if state.archiveConflicts > 0 {
+                    LabeledContent("Active/archive conflicts", value: "\(state.archiveConflicts)")
+                }
                 LabeledContent("Claude Code 会话", value: "\(state.claudeCount)")
                 LabeledContent("解析失败", value: "\(state.parseFailures)")
                 LabeledContent("上次索引", value: state.lastIndexed.map { $0.formatted(date: .omitted, time: .standard) } ?? "—")

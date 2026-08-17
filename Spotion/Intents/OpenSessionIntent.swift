@@ -18,7 +18,15 @@ struct OpenSessionIntent: OpenIntent {
     }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        switch try await AppCoordinator.shared.openSession(id: target.id) {
+        let coordinator = await AppCoordinator.shared
+        let archived = await coordinator.isArchivedSession(id: target.id)
+        if archived {
+            try await requestConfirmation(
+                actionName: .continue,
+                dialog: "This session is archived. Unarchive it with Codex, then open it?"
+            )
+        }
+        switch try await coordinator.openSession(id: target.id, archivedConfirmed: archived) {
         case .terminal(let app):
             return .result(dialog: "正在 \(app.displayName) 中恢复会话…")
         case .nativeApp(let name):
