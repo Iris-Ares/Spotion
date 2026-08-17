@@ -24,6 +24,23 @@ import Testing
     static let responseItemUser =
         "{\"timestamp\":\"2026-08-05T10:08:55.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"CONTEXT INJECTION\"}]}}"
 
+    static func fileToolCall(
+        _ name: String,
+        field: String = "path",
+        path: String,
+        namespace: String? = nil
+    ) throws -> String {
+        let arguments = try JSONSerialization.data(withJSONObject: [field: path], options: [.sortedKeys])
+        var payload: [String: Any] = [
+            "type": "function_call",
+            "name": name,
+            "arguments": String(decoding: arguments, as: UTF8.self),
+        ]
+        if let namespace { payload["namespace"] = namespace }
+        let line: [String: Any] = ["type": "response_item", "payload": payload]
+        return String(decoding: try JSONSerialization.data(withJSONObject: line), as: UTF8.self)
+    }
+
     private func makeHome(sessionLines: [String], rel: String = sessionRel) throws -> URL {
         let home = try TestSupport.makeTempDir()
         try TestSupport.write(sessionLines.joined(separator: "\n") + "\n", to: home.appendingPathComponent(rel))
@@ -103,6 +120,56 @@ import Testing
         #expect(record.laterPromptSnippets.allSatisfy { $0.count <= 300 })
         #expect(record.laterPromptSnippets.joined(separator: "\n").count <= 1_500)
         #expect(!record.laterPromptSnippets.contains("duplicate"))
+    }
+
+    @Test func touchedFilesUseOnlyAllowlistedStructuredInputs() throws {
+        let shell = "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"exec_command\",\"arguments\":\"{\\\"cmd\\\":\\\"cat Sources/ShellSecret.swift\\\"}\"}}"
+        let patch = "{\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call\",\"name\":\"apply_patch\",\"input\":\"*** Update File: Sources/PatchSecret.swift\"}}"
+        let output = "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"output\":\"Sources/OutputSecret.swift\"}}"
+        let assistant = "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Sources/ProseSecret.swift\"}]}}"
+        let home = try makeHome(sessionLines: [
+            Self.meta(cwd: "/tmp/proj"),
+            Self.userMessage("please inspect Sources/UserPromptSecret.swift"),
+            try Self.fileToolCall("read_file", path: "/tmp/proj/Sources/Auth Service.swift"),
+            try Self.fileToolCall("write_file", field: "file_path", path: "Tests/登录 Tests.swift"),
+            try Self.fileToolCall("edit_file", path: "./Sources/../Sources/Auth Service.swift"),
+            try Self.fileToolCall("read_file", path: "/tmp/outside/Secret.swift"),
+            try Self.fileToolCall("read_file", path: "Sources/", namespace: "mcp_files"),
+            shell,
+            patch,
+            output,
+            assistant,
+        ])
+        let scanner = CodexScanner(codexHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: true
+        ).record)
+
+        #expect(record.touchedFilePaths == ["Sources/Auth Service.swift", "Tests/登录 Tests.swift"])
+        let keywords = record.spotlightKeywords(includeTouchedFiles: true)
+        #expect(keywords.contains("Auth Service.swift"))
+        #expect(keywords.contains("Tests/登录 Tests.swift"))
+        #expect(!keywords.joined(separator: " ").contains("Secret.swift"))
+    }
+
+    @Test func missingExplicitCwdNeverUsesFallbackHomeForTouchedFiles() throws {
+        let metaWithoutCwd = "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"\(Self.uuid)\"}}"
+        let home = try makeHome(sessionLines: [
+            metaWithoutCwd,
+            Self.userMessage("first"),
+            try Self.fileToolCall("read_file", path: "Sources/Auth.swift"),
+        ])
+        let scanner = CodexScanner(codexHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: true
+        ).record)
+        #expect(record.touchedFilePaths.isEmpty)
     }
 
     @Test func disabledContentDescriptionExcludesCachedLaterPrompts() throws {

@@ -40,4 +40,38 @@ struct ScanCache: Codable, Sendable {
     /// Unchanged transcript paths still awaiting the opt-in reparse. A failed
     /// read or root enumeration leaves the path here for a later retry.
     var laterPromptPendingPaths: Set<String> = []
+    /// 0 means touched-file indexing is disabled. A positive generation
+    /// changes when allowlisted tool schemas or normalization behavior changes.
+    var touchedFileExtractionGeneration = 0
+    /// Unchanged transcript paths awaiting bounded touched-file hydration.
+    var touchedFilePendingPaths: Set<String> = []
+
+    private enum CodingKeys: String, CodingKey {
+        case version, entries, indexedIDs, dirtyIDs, pendingGhostDeletions
+        case codexTitles, iconSources, searchLaterPromptsEnabled
+        case laterPromptPendingPaths, touchedFileExtractionGeneration
+        case touchedFilePendingPaths
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        // Preserve the existing fail-closed cache contract: all v6 fields stay
+        // required, while only the new touched-file fields default for a valid
+        // pre-feature v6 cache.
+        version = try values.decode(Int.self, forKey: .version)
+        entries = try values.decode([String: ScanCacheEntry].self, forKey: .entries)
+        indexedIDs = try values.decode(Set<String>.self, forKey: .indexedIDs)
+        dirtyIDs = try values.decode(Set<String>.self, forKey: .dirtyIDs)
+        pendingGhostDeletions = try values.decode(Set<String>.self, forKey: .pendingGhostDeletions)
+        codexTitles = try values.decode([String: String].self, forKey: .codexTitles)
+        iconSources = try values.decode([String: String].self, forKey: .iconSources)
+        searchLaterPromptsEnabled = try values.decode(Bool.self, forKey: .searchLaterPromptsEnabled)
+        laterPromptPendingPaths = try values.decode(Set<String>.self, forKey: .laterPromptPendingPaths)
+        touchedFileExtractionGeneration = try values.decodeIfPresent(
+            Int.self, forKey: .touchedFileExtractionGeneration) ?? 0
+        touchedFilePendingPaths = try values.decodeIfPresent(
+            Set<String>.self, forKey: .touchedFilePendingPaths) ?? []
+    }
 }

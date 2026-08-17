@@ -232,7 +232,8 @@ final class AppCoordinator {
         let diff = await store.refresh(
             enabledAgents: enabled,
             iconSources: iconSources,
-            includeLaterPrompts: SpotionSettings.searchLaterPrompts
+            includeLaterPrompts: SpotionSettings.searchLaterPrompts,
+            includeTouchedFiles: SpotionSettings.searchTouchedFiles
         )
         do {
             if !diff.upserts.isEmpty {

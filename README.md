@@ -21,7 +21,7 @@ You run [Codex CLI](https://developers.openai.com/codex/cli) and [Claude Code](h
 
 ## Features
 
-- **Search every session** — by title, first prompt, project name, working directory, or git branch (branch is indexed for Claude Code sessions; the Codex scanner doesn't extract one yet). Codex titles come from its own session index; Claude Code titles follow the same priority the CLI uses (custom title → AI title → last prompt → first message).
+- **Search every session** — by title, first prompt, project name, working directory, or git branch (branch is indexed for Claude Code sessions; the Codex scanner doesn't extract one yet). An off-by-default privacy setting can also index recent project-relative file paths from recognized structured Read/Write/Edit tool inputs. Codex titles come from its own session index; Claude Code titles follow the same priority the CLI uses (custom title → AI title → last prompt → first message).
 - **Resume with one keystroke** — <kbd>⏎</kbd> opens the session as `codex resume` / `claude --resume` in Terminal.app or [Ghostty](https://ghostty.org), after `cd`-ing to the session's original directory.
 - **Or hand off to the desktop app** — per agent, choose to open sessions in the Claude or ChatGPT (Codex) desktop apps instead, via `claude://` / `codex://` deep links.
 - **Quick Create from Spotlight** — run *New Codex Session* / *New Claude Session* actions right inside Spotlight (macOS 26 Spotlight Actions): type a prompt inline, optionally pick a recent project, hit <kbd>⏎</kbd>, and the session starts in your terminal.
@@ -140,7 +140,7 @@ flowchart LR
 | **Titles** | `~/.codex/session_index.jsonl` (`thread_name`) | Title records near the file tail: custom title → AI title → last prompt |
 | **Fallbacks** | First user message → project name | First user message → project name |
 
-Reads are strictly bounded: scanners read an expanding head window (up to 4 MB) for metadata and the first real prompt, and a tail window (up to 512 KB) for Claude titles — multi-hundred-MB transcripts are never loaded whole. Parsed results are cached in `~/Library/Application Support/Spotion/` and re-parsed only when a file's size or mtime changes.
+Reads are strictly bounded: scanners read an expanding head window (up to 4 MB) for metadata and the first real prompt, and a tail window (up to 512 KB) for Claude titles and opt-in metadata — multi-hundred-MB transcripts are never loaded whole. Parsed results are cached in `~/Library/Application Support/Spotion/` and re-parsed only when a file's size or mtime changes. Touched-file paths are transient: Spotion donates at most 20 recent, distinct project-contained paths and their basenames to the local Spotlight index, but never writes them to its scan cache. Shell commands, patches, prose, tool output, reasoning, attachments, and paths outside the session project are excluded.
 
 Sessions are donated to a named CoreSpotlight index as App Entities, so Spotlight gets full semantic results (title, project subtitle, open action) rather than plain file matches. A FSEvents watcher on both agents' data directories triggers incremental refreshes; deletions, agent toggles, and system reindex requests are all reconciled against a persisted index state, with durable retries if the Spotlight service misbehaves.
 
@@ -161,7 +161,7 @@ All preferences live in *Settings…* (via the menu-bar icon):
 |---|---|
 | **General** | Enable/disable indexing per agent · per-agent open-with (CLI / desktop app) · terminal choice (Terminal.app / Ghostty) · launch at login |
 | **Advanced** | Explicit `codex` / `claude` binary paths (when auto-detection can't find them) · default directory for Quick Create |
-| **Index** | Session counts, parse failures, last-index time · *Rescan* / *Rebuild Index* · a self-check that queries the index directly and tells you whether a search problem is in Spotion's index or in the Spotlight UI |
+| **Index** | Off-by-default later-prompt and touched-file search · session counts, parse failures, last-index time · *Rescan* / *Rebuild Index* · a self-check that queries the index directly and tells you whether a search problem is in Spotion's index or in the Spotlight UI |
 
 ## Troubleshooting
 
