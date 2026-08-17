@@ -86,10 +86,4 @@ struct MenuBarView: View {
         if state.parseFailures > 0 { line += " · \(state.parseFailures) 个解析失败" }
         return line
     }
-
-    private func menuTitle(_ item: TitledSession) -> String {
-        item.record.isArchived
-            ? "\(item.title) — Archived · \(item.record.projectName)"
-            : item.title
-    }
 }

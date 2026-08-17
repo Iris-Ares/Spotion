@@ -661,7 +661,10 @@ actor SessionStore {
 
     func distinctProjects() -> [ProjectInfo] {
         var byCwd: [String: Date] = [:]
-        for record in records.values where isVisible(record) {
+        // Quick Create remains an active-work surface. Opting into archived
+        // session search must not add archive-only projects or reorder the
+        // existing project suggestions by an archive-time mtime.
+        for record in records.values where isVisible(record) && !record.isArchived {
             byCwd[record.cwd] = max(byCwd[record.cwd] ?? .distantPast, record.lastActivityAt)
         }
         return byCwd
