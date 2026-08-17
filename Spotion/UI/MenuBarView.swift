@@ -64,8 +64,14 @@ struct MenuBarView: View {
         .keyboardShortcut("q")
     }
 
+    private func menuTitle(_ item: TitledSession) -> String {
+        item.record.isArchived
+            ? "\(item.title) — Archived · \(item.record.projectName)"
+            : item.title
+    }
+
     private func sessionButton(_ item: TitledSession) -> some View {
-        Button("\(item.title)") {
+        Button(menuTitle(item)) {
             Task {
                 do { try await AppCoordinator.shared.openSession(id: item.record.id) }
                 catch { AppCoordinator.shared.uiState.lastError = error.localizedDescription }
@@ -75,7 +81,15 @@ struct MenuBarView: View {
 
     private var statsLine: String {
         var line = "Codex \(state.codexCount) · Claude \(state.claudeCount)"
+        if state.archivedCodexCount > 0 { line += " · Archived \(state.archivedCodexCount)" }
+        if state.archiveConflicts > 0 { line += " · \(state.archiveConflicts) archive conflict" }
         if state.parseFailures > 0 { line += " · \(state.parseFailures) 个解析失败" }
         return line
+    }
+
+    private func menuTitle(_ item: TitledSession) -> String {
+        item.record.isArchived
+            ? "\(item.title) — Archived · \(item.record.projectName)"
+            : item.title
     }
 }

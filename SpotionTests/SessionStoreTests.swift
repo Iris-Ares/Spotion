@@ -26,6 +26,7 @@ import Testing
             hiddenSessionsURL: env.hiddenSessionsURL,
             projectExclusionsURL: env.projectExclusionsURL,
             codexScanner: CodexScanner(codexHome: env.codexHome),
+            archivedCodexScanner: CodexScanner(codexHome: env.codexHome, source: .archived),
             claudeScanner: ClaudeScanner(claudeHome: env.claudeHome))
     }
 
@@ -49,6 +50,19 @@ import Testing
                 ClaudeScannerTests.customTitle(title),
             ].joined(separator: "\n") + "\n",
             to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(uuid).jsonl"))
+    }
+
+    private func writeArchivedCodexSession(
+        _ env: Env,
+        prompt: String = "archived codex prompt"
+    ) throws -> URL {
+        try TestSupport.write(
+            [CodexScannerTests.meta(), CodexScannerTests.userMessage(prompt)]
+                .joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(
+                "archived_sessions/rollout-2026-08-05T18-08-52-\(CodexScannerTests.uuid).jsonl"
+            )
+        )
     }
 
     @discardableResult
@@ -2014,5 +2028,139 @@ import Testing
         #expect(recovered.upserts.map(\.id) == [id])
         #expect(await relaunched.titled(records: recovered.upserts).first?.title == "Agent title")
         #expect(await relaunched.warnings().contains { $0.contains("aliases") })
+    }
+
+    @Test func archivedPreferenceEnableDisableAndRelaunchAreDurable() async throws {
+        let env = try makeEnv()
+        try writeArchivedCodexSession(env)
+        let store = makeStore(env)
+        await store.bootstrap()
+
+        #expect(await store.refresh(enabledAgents: both, includeArchivedCodex: false).isEmpty)
+        let enabled = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        let archived = try #require(enabled.upserts.first)
+        #expect(archived.id == "codex:\(CodexScannerTests.uuid)")
+        #expect(archived.isArchived)
+        // A failed Spotlight upsert remains dirty and retries unchanged.
+        let enabledRetry = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(enabledRetry.upserts.map(\.id) == [archived.id])
+        await store.markIndexed(enabledRetry)
+        #expect(await store.refresh(enabledAgents: both, includeArchivedCodex: true).isEmpty)
+
+        let disabled = await store.refresh(enabledAgents: both, includeArchivedCodex: false)
+        #expect(disabled.deletedIDs == ["codex:\(CodexScannerTests.uuid)"])
+        // A failed Spotlight deletion also retries after the source entry is gone.
+        let disabledRetry = await store.refresh(enabledAgents: both, includeArchivedCodex: false)
+        #expect(disabledRetry.deletedIDs == disabled.deletedIDs)
+        await store.markIndexed(disabledRetry)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        #expect(await relaunched.refresh(enabledAgents: both, includeArchivedCodex: false).isEmpty)
+        await relaunched.forgetIndexed()
+        let rebuilt = await relaunched.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(rebuilt.upserts.count == 1)
+        #expect(rebuilt.upserts.first?.isArchived == true)
+    }
+
+    @Test func activeSourceWinsArchiveConflictIndependentOfMtime() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env, title: "active title")
+        let archivedURL = try writeArchivedCodexSession(env, prompt: "newer archived prompt")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 86_400)],
+            ofItemAtPath: archivedURL.path
+        )
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let diff = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(diff.upserts.count == 1)
+        #expect(diff.upserts.first?.isArchived == false)
+        #expect(diff.upserts.first?.firstPrompt == "codex prompt")
+        let stats = await store.lastStats
+        #expect(stats.archiveConflicts == 1)
+    }
+
+    @Test func archivedSessionUsesSharedCodexTitleIndexAndAgentDisableWins() async throws {
+        let env = try makeEnv()
+        try writeArchivedCodexSession(env)
+        try TestSupport.write(
+            "{\"id\":\"\(CodexScannerTests.uuid)\",\"thread_name\":\"Archived title\"}\n",
+            to: env.codexHome.appendingPathComponent("session_index.jsonl")
+        )
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        let record = try #require(initial.upserts.first)
+        #expect(await store.displayTitle(for: record) == "Archived title")
+        await store.markIndexed(initial)
+
+        let disabled = await store.refresh(
+            enabledAgents: [.claude],
+            includeArchivedCodex: true
+        )
+        #expect(disabled.deletedIDs == ["codex:\(CodexScannerTests.uuid)"])
+        #expect(await store.record(id: "codex:\(CodexScannerTests.uuid)") == nil)
+    }
+
+    @Test func archivedSessionsDoNotPopulateQuickCreateProjects() async throws {
+        let env = try makeEnv()
+        try writeArchivedCodexSession(env)
+        let store = makeStore(env)
+        await store.bootstrap()
+
+        _ = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(await store.distinctProjects().isEmpty)
+
+        try writeClaudeSession(env)
+        _ = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(await store.distinctProjects().map(\.cwd) == ["/tmp/proj"])
+    }
+
+    @Test func rolloutMoveKeepsStableIDAndTransitionsArchiveState() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let activeURL = env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel)
+        let archivedURL = env.codexHome.appendingPathComponent(
+            "archived_sessions/rollout-2026-08-05T18-08-52-\(CodexScannerTests.uuid).jsonl")
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let active = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        await store.markIndexed(active)
+
+        try FileManager.default.createDirectory(
+            at: archivedURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: activeURL, to: archivedURL)
+        let archived = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(archived.deletedIDs.isEmpty)
+        #expect(archived.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        #expect(archived.upserts.first?.isArchived == true)
+        await store.markIndexed(archived)
+
+        try FileManager.default.createDirectory(
+            at: activeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: archivedURL, to: activeURL)
+        let restored = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(restored.deletedIDs.isEmpty)
+        #expect(restored.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        #expect(restored.upserts.first?.isArchived == false)
+    }
+
+    @Test func archivedEnumerationFailurePreservesIndexedRecord() async throws {
+        let env = try makeEnv()
+        try writeArchivedCodexSession(env)
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        await store.markIndexed(initial)
+
+        let root = env.codexHome.appendingPathComponent("archived_sessions")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path) }
+        let deferred = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(deferred.deletedIDs.isEmpty)
+        #expect(await store.record(id: "codex:\(CodexScannerTests.uuid)")?.isArchived == true)
     }
 }

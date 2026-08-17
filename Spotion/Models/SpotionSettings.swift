@@ -104,6 +104,12 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "searchTouchedFiles") }
     }
 
+    /// Archived Codex metadata can be sensitive; missing preference is off.
+    static var includeArchivedCodexSessions: Bool {
+        get { d.bool(forKey: "includeArchivedCodexSessions") }
+        set { d.set(newValue, forKey: "includeArchivedCodexSessions") }
+    }
+
     private static func nonEmpty(_ s: String?) -> String? {
         guard let s, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return s

@@ -26,6 +26,10 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     /// Transient proof that this in-memory record was parsed with the current
     /// touched-file extraction generation, even when no eligible path existed.
     var touchedFileHydrationGeneration: Int
+    /// True only while this record is authoritative from Codex's documented
+    /// archived_sessions root. Persisted so a relaunch never presents an
+    /// archived result as immediately resumable.
+    var isArchived: Bool
     var cwd: String
     var projectName: String
     var gitBranch: String?
@@ -36,7 +40,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var fileSize: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case id, agent, sessionID, fallbackTitle, firstPrompt, cwd, projectName
+        case id, agent, sessionID, fallbackTitle, firstPrompt, isArchived, cwd, projectName
         case gitBranch, startedAt, lastActivityAt, filePath, fileSize
     }
 
@@ -50,6 +54,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         touchedFilePaths: [String] = [],
         touchedFileBasePath: String? = nil,
         touchedFileHydrationGeneration: Int = 0,
+        isArchived: Bool = false,
         cwd: String,
         projectName: String,
         gitBranch: String?,
@@ -67,6 +72,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         self.touchedFilePaths = touchedFilePaths
         self.touchedFileBasePath = touchedFileBasePath
         self.touchedFileHydrationGeneration = touchedFileHydrationGeneration
+        self.isArchived = isArchived
         self.cwd = cwd
         self.projectName = projectName
         self.gitBranch = gitBranch
@@ -87,6 +93,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         touchedFilePaths = []
         touchedFileBasePath = nil
         touchedFileHydrationGeneration = 0
+        // Valid pre-feature v6 caches contain active sessions only.
+        isArchived = try values.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         cwd = try values.decode(String.self, forKey: .cwd)
         projectName = try values.decode(String.self, forKey: .projectName)
         gitBranch = try values.decodeIfPresent(String.self, forKey: .gitBranch)
@@ -103,6 +111,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(sessionID, forKey: .sessionID)
         try values.encodeIfPresent(fallbackTitle, forKey: .fallbackTitle)
         try values.encodeIfPresent(firstPrompt, forKey: .firstPrompt)
+        try values.encode(isArchived, forKey: .isArchived)
         try values.encode(cwd, forKey: .cwd)
         try values.encode(projectName, forKey: .projectName)
         try values.encodeIfPresent(gitBranch, forKey: .gitBranch)
@@ -139,7 +148,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         cwd: String,
         sourceTitle: String? = nil,
         touchedFilePaths: [String] = [],
-        includeTouchedFiles: Bool = false
+        includeTouchedFiles: Bool = false,
+        isArchived: Bool = false
     ) -> [String] {
         // The agent-derived title stays searchable when a Spotion alias
         // replaces the visible title.
@@ -148,6 +158,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         if let gitBranch { candidates.append(gitBranch) }
         candidates += cwd.split(separator: "/").map(String.init)
         candidates += [sessionID, id]
+        if isArchived { candidates.append("archived") }
         if includeTouchedFiles {
             for path in touchedFilePaths {
                 candidates.append(path)

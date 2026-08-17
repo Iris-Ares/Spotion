@@ -264,6 +264,7 @@ private struct IndexSettingsTab: View {
     @State private var searchLaterPrompts = SpotionSettings.searchLaterPrompts
     @State private var historyWindow = SpotionSettings.spotlightHistoryWindow
     @State private var searchTouchedFiles = SpotionSettings.searchTouchedFiles
+    @State private var includeArchivedCodex = SpotionSettings.includeArchivedCodexSessions
     @State private var checkTerm = ""
     @State private var checkResult: String?
 
@@ -296,6 +297,14 @@ private struct IndexSettingsTab: View {
                         Task { await AppCoordinator.shared.refreshAndApply() }
                     }
                 Text("Off by default. Extracts only a bounded set of project-relative paths from recognized Read, Write, and Edit tool inputs. Shell commands, patches, prose, tool output, attachments, and paths outside the session project are never indexed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Include archived Codex sessions", isOn: $includeArchivedCodex)
+                    .onChange(of: includeArchivedCodex) {
+                        SpotionSettings.includeArchivedCodexSessions = includeArchivedCodex
+                        Task { await AppCoordinator.shared.refreshAndApply() }
+                    }
+                Text("Off by default. Archived results are visibly labeled and require confirmation before Spotion asks Codex to unarchive and open them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -364,6 +373,12 @@ private struct IndexSettingsTab: View {
             }
             Section("状态") {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
+                if state.archivedCodexCount > 0 {
+                    LabeledContent("Archived Codex", value: "\(state.archivedCodexCount)")
+                }
+                if state.archiveConflicts > 0 {
+                    LabeledContent("Active/archive conflicts", value: "\(state.archiveConflicts)")
+                }
                 LabeledContent("Claude Code 会话", value: "\(state.claudeCount)")
                 LabeledContent("解析失败", value: "\(state.parseFailures)")
                 LabeledContent("Spotlight 可见", value: "\(state.visibleCount) / \(state.totalCount)")
