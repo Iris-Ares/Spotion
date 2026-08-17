@@ -1,6 +1,21 @@
 import Foundation
 
-/// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+enum CodexSessionSource: Sendable {
+    case active
+    case archived
+
+    var directoryName: String {
+        switch self {
+        case .active: "sessions"
+        case .archived: "archived_sessions"
+        }
+    }
+
+    var isArchived: Bool { self == .archived }
+}
+
+/// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl or
+/// ~/.codex/archived_sessions/rollout-<ts>-<uuid>.jsonl
 ///
 /// Line 1 is always session_meta (its payload can carry tens of KB of
 /// base_instructions, hence the expandable head window).
@@ -13,11 +28,16 @@ struct CodexScanner: SessionScanner {
     let agent: AgentKind = .codex
     let sessionsRoot: URL
     let indexURL: URL
+    let source: CodexSessionSource
 
     var rootPath: String { sessionsRoot.path }
 
-    init(codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")) {
-        self.sessionsRoot = codexHome.appendingPathComponent("sessions")
+    init(
+        codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
+        source: CodexSessionSource = .active
+    ) {
+        self.source = source
+        self.sessionsRoot = codexHome.appendingPathComponent(source.directoryName)
         self.indexURL = codexHome.appendingPathComponent("session_index.jsonl")
     }
 
@@ -138,6 +158,7 @@ struct CodexScanner: SessionScanner {
             fallbackTitle: nil,
             firstPrompt: firstPrompt,
             laterPromptSnippets: [],
+            isArchived: source.isArchived,
             cwd: cwd,
             projectName: (cwd as NSString).lastPathComponent,
             gitBranch: nil,

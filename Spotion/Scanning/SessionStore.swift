@@ -8,6 +8,8 @@ struct SessionDiff: Sendable {
 
 struct StoreStats: Sendable {
     var codexCount = 0
+    var archivedCodexCount = 0
+    var archiveConflicts = 0
     var claudeCount = 0
     var parseFailures = 0
     var lastRefresh: Date?
@@ -31,6 +33,7 @@ struct TitledSession: Sendable, Hashable {
 actor SessionStore {
     private let cacheURL: URL
     private let codexScanner: CodexScanner?
+    private let archivedCodexScanner: CodexScanner?
     private let claudeScanner: ClaudeScanner?
 
     private var cache = ScanCache()
@@ -42,10 +45,17 @@ actor SessionStore {
     /// upgrade can never produce deletedIDs — a deleteAll + full re-donation
     /// is required.
     private var pendingFullRebuild = false
+    private var archiveConflictIDs: Set<String> = []
 
-    init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
+    init(
+        cacheURL: URL,
+        codexScanner: CodexScanner?,
+        archivedCodexScanner: CodexScanner? = nil,
+        claudeScanner: ClaudeScanner?
+    ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
+        self.archivedCodexScanner = archivedCodexScanner
         self.claudeScanner = claudeScanner
     }
 
@@ -72,17 +82,26 @@ actor SessionStore {
     }
 
     /// Rebuild id → record from entries. `codex resume`/`fork` create multiple
-    /// rollout files for the same session_id — on collision keep the file with
-    /// the newest lastActivityAt (reflects recent activity correctly, and
-    /// automatically falls back to the older file when the newest is deleted).
+    /// rollout files for the same session_id — an active source always wins an
+    /// active/archive conflict, independent of mtime or enumeration order.
+    /// Within one source, keep the newest rollout and fall back when it moves.
     private func rebuildRecords() {
         records = [:]
+        archiveConflictIDs = []
         for entry in cache.entries.values {
             guard let record = entry.record else { continue }
-            if let existing = records[record.id], existing.lastActivityAt >= record.lastActivityAt {
-                continue
+            if let existing = records[record.id] {
+                if existing.isArchived != record.isArchived {
+                    archiveConflictIDs.insert(record.id)
+                    if !existing.isArchived { continue }
+                } else if existing.lastActivityAt >= record.lastActivityAt {
+                    continue
+                }
             }
             records[record.id] = record
+        }
+        if !archiveConflictIDs.isEmpty {
+            NSLog("Spotion: active/archive Codex conflicts: %@", archiveConflictIDs.sorted().joined(separator: ", "))
         }
     }
 
@@ -101,7 +120,8 @@ actor SessionStore {
     func refresh(
         enabledAgents: Set<AgentKind>,
         iconSources: [AgentKind: String] = [:],
-        includeLaterPrompts: Bool = false
+        includeLaterPrompts: Bool = false,
+        includeArchivedCodex: Bool = false
     ) async -> SessionDiff {
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
@@ -175,10 +195,16 @@ actor SessionStore {
         var roots: [RootState] = []
         var toParse: [(scanner: any SessionScanner, file: ScannedFile)] = []
 
-        let scanners: [any SessionScanner] = [codexScanner as (any SessionScanner)?, claudeScanner]
-            .compactMap { $0 }
+        let scanners: [(scanner: any SessionScanner, enabled: Bool)] = [
+            codexScanner.map { ($0 as any SessionScanner, enabledAgents.contains(.codex)) },
+            archivedCodexScanner.map {
+                ($0 as any SessionScanner, enabledAgents.contains(.codex) && includeArchivedCodex)
+            },
+            claudeScanner.map { ($0 as any SessionScanner, enabledAgents.contains(.claude)) },
+        ].compactMap { $0 }
 
-        for scanner in scanners {
+        for descriptor in scanners {
+            let scanner = descriptor.scanner
             // canonicalPath (realpath semantics): FileManager enumeration returns
             // symlink-resolved canonical paths (e.g. /var → /private/var), so the
             // root must be canonicalized the same way for prefix matching to hold.
@@ -186,7 +212,7 @@ actor SessionStore {
             // in the opposite direction.
             let rootPath = (try? URL(fileURLWithPath: scanner.rootPath)
                 .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath) ?? scanner.rootPath
-            guard enabledAgents.contains(scanner.agent) else {
+            guard descriptor.enabled else {
                 roots.append(RootState(path: rootPath, trustworthy: true, enabled: false))
                 continue
             }
@@ -300,6 +326,8 @@ actor SessionStore {
 
         lastStats = StoreStats(
             codexCount: records.values.count(where: { $0.agent == .codex }),
+            archivedCodexCount: records.values.count(where: { $0.isArchived }),
+            archiveConflicts: archiveConflictIDs.count,
             claudeCount: records.values.count(where: { $0.agent == .claude }),
             parseFailures: cache.entries.values.count(where: { $0.record == nil }),
             lastRefresh: Date()
@@ -415,12 +443,13 @@ actor SessionStore {
     func scanReport() -> String {
         var lines = [
             "Spotion scan report",
-            "codex=\(lastStats.codexCount) claude=\(lastStats.claudeCount) parseFailures=\(lastStats.parseFailures)",
+            "codex=\(lastStats.codexCount) archivedCodex=\(lastStats.archivedCodexCount) archiveConflicts=\(lastStats.archiveConflicts) claude=\(lastStats.claudeCount) parseFailures=\(lastStats.parseFailures)",
             "indexedIDs=\(cache.indexedIDs.count) lastRefresh=\(lastStats.lastRefresh.map(String.init(describing:)) ?? "never")",
             "",
         ]
         for record in all(limit: 5) {
-            lines.append("[\(record.agent.rawValue)] \(displayTitle(for: record)) — \(record.projectName) — \(record.lastActivityAt)")
+            let state = record.isArchived ? " archived" : ""
+            lines.append("[\(record.agent.rawValue)\(state)] \(displayTitle(for: record)) — \(record.projectName) — \(record.lastActivityAt)")
         }
         return lines.joined(separator: "\n")
     }

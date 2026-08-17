@@ -15,6 +15,10 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     /// transient runtime state: CodingKeys deliberately omit it so prompt text
     /// is donated to Spotlight without entering Spotion's persisted scan cache.
     var laterPromptSnippets: [String]
+    /// True only while this record is authoritative from Codex's documented
+    /// archived_sessions root. Persisted so a relaunch never presents an
+    /// archived result as immediately resumable.
+    var isArchived: Bool
     var cwd: String
     var projectName: String
     var gitBranch: String?
@@ -25,7 +29,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var fileSize: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case id, agent, sessionID, fallbackTitle, firstPrompt, cwd, projectName
+        case id, agent, sessionID, fallbackTitle, firstPrompt, isArchived, cwd, projectName
         case gitBranch, startedAt, lastActivityAt, filePath, fileSize
     }
 
@@ -36,6 +40,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         fallbackTitle: String?,
         firstPrompt: String?,
         laterPromptSnippets: [String],
+        isArchived: Bool = false,
         cwd: String,
         projectName: String,
         gitBranch: String?,
@@ -50,6 +55,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         self.fallbackTitle = fallbackTitle
         self.firstPrompt = firstPrompt
         self.laterPromptSnippets = laterPromptSnippets
+        self.isArchived = isArchived
         self.cwd = cwd
         self.projectName = projectName
         self.gitBranch = gitBranch
@@ -67,6 +73,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         fallbackTitle = try values.decodeIfPresent(String.self, forKey: .fallbackTitle)
         firstPrompt = try values.decodeIfPresent(String.self, forKey: .firstPrompt)
         laterPromptSnippets = []
+        // Valid pre-feature v6 caches contain active sessions only.
+        isArchived = try values.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         cwd = try values.decode(String.self, forKey: .cwd)
         projectName = try values.decode(String.self, forKey: .projectName)
         gitBranch = try values.decodeIfPresent(String.self, forKey: .gitBranch)
@@ -83,6 +91,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(sessionID, forKey: .sessionID)
         try values.encodeIfPresent(fallbackTitle, forKey: .fallbackTitle)
         try values.encodeIfPresent(firstPrompt, forKey: .firstPrompt)
+        try values.encode(isArchived, forKey: .isArchived)
         try values.encode(cwd, forKey: .cwd)
         try values.encode(projectName, forKey: .projectName)
         try values.encodeIfPresent(gitBranch, forKey: .gitBranch)
