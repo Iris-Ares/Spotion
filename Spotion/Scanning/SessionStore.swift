@@ -175,7 +175,8 @@ actor SessionStore {
         iconSources: [AgentKind: String] = [:],
         includeLaterPrompts: Bool = false,
         historyWindow: SpotlightHistoryWindow = .all,
-        now: Date = Date()
+        now: Date = Date(),
+        includeTouchedFiles: Bool = false
     ) async -> SessionDiff {
         self.historyWindow = historyWindow
         historyReferenceDate = now
@@ -199,6 +200,26 @@ actor SessionStore {
                 for path in Array(cache.entries.keys) {
                     guard var record = cache.entries[path]?.record else { continue }
                     record.laterPromptSnippets = []
+                    cache.entries[path]?.record = record
+                    changedIDs.insert(record.id)
+                }
+            }
+        }
+
+        let touchedFileGeneration = includeTouchedFiles ? TouchedFilePolicy.extractionGeneration : 0
+        if cache.touchedFileExtractionGeneration != touchedFileGeneration {
+            cache.touchedFileExtractionGeneration = touchedFileGeneration
+            if includeTouchedFiles {
+                cache.touchedFilePendingPaths = Set(cache.entries.keys)
+            } else {
+                // Transient paths are already absent after a relaunch, but
+                // every indexed record must still overwrite previously donated
+                // file keywords when the preference is disabled.
+                cache.touchedFilePendingPaths = []
+                for path in Array(cache.entries.keys) {
+                    guard var record = cache.entries[path]?.record else { continue }
+                    record.touchedFilePaths = []
+                    record.touchedFileHydrationGeneration = 0
                     cache.entries[path]?.record = record
                     changedIDs.insert(record.id)
                 }
@@ -242,6 +263,18 @@ actor SessionStore {
                 }
             }
         }
+        if includeTouchedFiles {
+            let needsHydration = cache.dirtyIDs
+                .union(changedIDs)
+                .union(Set(records.keys).subtracting(cache.indexedIDs))
+            for (path, entry) in cache.entries {
+                if let record = entry.record,
+                   needsHydration.contains(record.id),
+                   record.touchedFileHydrationGeneration != TouchedFilePolicy.extractionGeneration {
+                    cache.touchedFilePendingPaths.insert(path)
+                }
+            }
+        }
 
         struct RootState {
             var agent: AgentKind
@@ -279,7 +312,8 @@ actor SessionStore {
                 seenPaths.insert(file.path)
                 if let entry = cache.entries[file.path],
                    entry.mtime == file.mtime, entry.size == file.size,
-                   !cache.laterPromptPendingPaths.contains(file.path) {
+                   !cache.laterPromptPendingPaths.contains(file.path),
+                   !cache.touchedFilePendingPaths.contains(file.path) {
                     continue
                 }
                 toParse.append((scanner, file))
@@ -290,7 +324,11 @@ actor SessionStore {
         let parsed = await withTaskGroup(of: (ScannedFile, AgentKind, ParseOutcome).self) { group in
             for (scanner, file) in toParse {
                 group.addTask {
-                    (file, scanner.agent, scanner.parse(file, includeLaterPrompts: includeLaterPrompts))
+                    (file, scanner.agent, scanner.parse(
+                        file,
+                        includeLaterPrompts: includeLaterPrompts,
+                        includeTouchedFiles: includeTouchedFiles
+                    ))
                 }
             }
             var results: [(ScannedFile, AgentKind, ParseOutcome)] = []
@@ -307,6 +345,7 @@ actor SessionStore {
             if case .ioFailure = outcome { continue }
             cache.laterPromptPendingPaths.remove(file.path)
             if includeLaterPrompts { hydratedPromptPaths.insert(file.path) }
+            cache.touchedFilePendingPaths.remove(file.path)
             var record = outcome.record
             // Claude desktop's claude://resume import rewrites the transcript
             // in place with the tail title records stripped. Same path + same
@@ -347,6 +386,7 @@ actor SessionStore {
                 changedIDs.insert(removed.id)
             }
             cache.laterPromptPendingPaths.remove(path)
+            cache.touchedFilePendingPaths.remove(path)
         }
 
         // Rebuild uniformly from entries (handles winner selection among
@@ -405,6 +445,14 @@ actor SessionStore {
                 cache.laterPromptPendingPaths.insert(record.filePath)
             }
         }
+        if includeTouchedFiles {
+            for id in changedIDs {
+                guard let record = records[id],
+                      record.touchedFileHydrationGeneration != TouchedFilePolicy.extractionGeneration
+                else { continue }
+                cache.touchedFilePendingPaths.insert(record.filePath)
+            }
+        }
 
         // If an enabled root could not be enumerated, its cached activity time
         // may be stale. Keep already-indexed items in Spotlight until a
@@ -432,8 +480,13 @@ actor SessionStore {
             guard let path = records[$0]?.filePath else { return false }
             return cache.laterPromptPendingPaths.contains(path)
         }) : []
+        let touchedFileHydrationBlockedIDs = includeTouchedFiles ? Set(upsertIDs.filter {
+            guard let path = records[$0]?.filePath else { return false }
+            return cache.touchedFilePendingPaths.contains(path)
+        }) : []
+        let hydrationBlockedIDs = promptHydrationBlockedIDs.union(touchedFileHydrationBlockedIDs)
         let diff = SessionDiff(
-            upserts: upsertIDs.subtracting(promptHydrationBlockedIDs).compactMap { records[$0] },
+            upserts: upsertIDs.subtracting(hydrationBlockedIDs).compactMap { records[$0] },
             deletedIDs: Array(cache.indexedIDs.subtracting(visibleIDs))
         )
 

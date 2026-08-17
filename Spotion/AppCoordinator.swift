@@ -263,7 +263,8 @@ final class AppCoordinator {
             iconSources: iconSources,
             includeLaterPrompts: SpotionSettings.searchLaterPrompts,
             historyWindow: SpotionSettings.spotlightHistoryWindow,
-            now: started
+            now: started,
+            includeTouchedFiles: SpotionSettings.searchTouchedFiles
         )
         do {
             if !diff.upserts.isEmpty {

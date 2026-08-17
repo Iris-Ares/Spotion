@@ -26,6 +26,28 @@ import Testing
     static let attachmentOnlyUser =
         "{\"type\":\"user\",\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp/proj\",\"timestamp\":\"2026-08-05T10:00:01.000Z\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"source\":{\"data\":\"SECRET_ATTACHMENT\"}},{\"type\":\"tool_result\",\"text\":\"SECRET_TOOL\"}]}}"
 
+    static func fileToolUse(
+        _ name: String,
+        field: String = "file_path",
+        path: String,
+        sidechain: Bool = false
+    ) throws -> String {
+        let block: [String: Any] = [
+            "type": "tool_use",
+            "name": name,
+            "input": [field: path],
+        ]
+        let line: [String: Any] = [
+            "type": "assistant",
+            "sessionId": uuid,
+            "cwd": "/tmp/proj",
+            "timestamp": "2026-08-05T10:00:02.000Z",
+            "isSidechain": sidechain,
+            "message": ["role": "assistant", "content": [block]],
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: line), as: UTF8.self)
+    }
+
     static func customTitle(_ t: String) -> String {
         "{\"type\":\"custom-title\",\"customTitle\":\"\(t)\",\"sessionId\":\"\(uuid)\"}"
     }
@@ -99,6 +121,41 @@ import Testing
         let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
 
         #expect(record.laterPromptSnippets == ["inside bounded tail"])
+    }
+
+    @Test func touchedFilesUseOnlyAllowlistedToolUseBlocks() throws {
+        let toolResult = "{\"type\":\"user\",\"sessionId\":\"\(Self.uuid)\",\"cwd\":\"/tmp/proj\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"text\":\"Sources/ResultSecret.swift\"}]}}"
+        let assistantProse = "{\"type\":\"assistant\",\"sessionId\":\"\(Self.uuid)\",\"cwd\":\"/tmp/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Sources/ProseSecret.swift\"}]}}"
+        let home = try makeHome(lines: [
+            Self.user("please inspect Sources/UserPromptSecret.swift"),
+            try Self.fileToolUse("Read", path: "/tmp/proj/Sources/Auth.swift"),
+            try Self.fileToolUse("Write", path: "Tests/登录 Tests.swift"),
+            try Self.fileToolUse("Edit", path: "./Sources/Auth.swift"),
+            try Self.fileToolUse("NotebookEdit", field: "notebook_path", path: "Notebooks/Model.ipynb"),
+            try Self.fileToolUse("Bash", path: "Sources/ShellSecret.swift"),
+            try Self.fileToolUse("Glob", path: "Sources/DirectorySecret.swift"),
+            try Self.fileToolUse("Read", path: "/tmp/outside/OutsideSecret.swift"),
+            try Self.fileToolUse("Read", path: "Sources/SidechainSecret.swift", sidechain: true),
+            toolResult,
+            assistantProse,
+        ])
+        let scanner = ClaudeScanner(claudeHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: true
+        ).record)
+
+        #expect(record.touchedFilePaths == [
+            "Notebooks/Model.ipynb",
+            "Sources/Auth.swift",
+            "Tests/登录 Tests.swift",
+        ])
+        let donated = record.spotlightKeywords(includeTouchedFiles: true).joined(separator: " ")
+        #expect(donated.contains("Auth.swift"))
+        #expect(donated.contains("Model.ipynb"))
+        #expect(!donated.contains("Secret.swift"))
     }
 
     @Test func skipsSidechainCommandAndCaveatPrompts() throws {

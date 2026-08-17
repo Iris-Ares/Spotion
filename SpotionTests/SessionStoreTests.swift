@@ -377,6 +377,181 @@ import Testing
         #expect(await store.refresh(enabledAgents: [.codex]).isEmpty)
     }
 
+    @Test func togglingTouchedFileSearchHydratesTransientPathsAndStabilizes() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("codex first"),
+                try CodexScannerTests.fileToolCall("edit_file", path: "/tmp/proj/Sources/Auth.swift"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        try TestSupport.write(
+            [
+                ClaudeScannerTests.user("claude first"),
+                try ClaudeScannerTests.fileToolUse("Write", path: "Tests/LoginTests.swift"),
+            ].joined(separator: "\n") + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeTouchedFiles: false)
+        #expect(initial.upserts.count == 2)
+        #expect(initial.upserts.allSatisfy { $0.touchedFilePaths.isEmpty })
+        await store.markIndexed(initial)
+        #expect(await store.refresh(enabledAgents: both, includeTouchedFiles: false).isEmpty)
+
+        let enabled = await store.refresh(enabledAgents: both, includeTouchedFiles: true)
+        #expect(enabled.upserts.count == 2)
+        #expect(enabled.upserts.contains { $0.touchedFilePaths == ["Sources/Auth.swift"] })
+        #expect(enabled.upserts.contains { $0.touchedFilePaths == ["Tests/LoginTests.swift"] })
+
+        // Simulate a failed donation. Transient paths must be rehydrated and
+        // retried even though they were deliberately absent from the cache.
+        let retried = await store.refresh(enabledAgents: both, includeTouchedFiles: true)
+        #expect(retried.upserts.count == 2)
+        #expect(retried.upserts.allSatisfy { !$0.touchedFilePaths.isEmpty })
+        await store.markIndexed(retried)
+        #expect(await store.refresh(enabledAgents: both, includeTouchedFiles: true).isEmpty)
+
+        let persistedCache = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        #expect(!persistedCache.contains("Sources/Auth.swift"))
+        #expect(!persistedCache.contains("Tests/LoginTests.swift"))
+
+        // A full rebuild after relaunch must hydrate paths before donation.
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        await relaunched.forgetIndexed()
+        let rebuilt = await relaunched.refresh(enabledAgents: both, includeTouchedFiles: true)
+        #expect(rebuilt.upserts.count == 2)
+        #expect(rebuilt.upserts.allSatisfy { !$0.touchedFilePaths.isEmpty })
+
+        let disabled = await store.refresh(enabledAgents: both, includeTouchedFiles: false)
+        #expect(disabled.upserts.count == 2)
+        #expect(disabled.upserts.allSatisfy { $0.touchedFilePaths.isEmpty })
+        #expect(disabled.upserts.allSatisfy {
+            !$0.spotlightKeywords(includeTouchedFiles: false).contains("Auth.swift")
+        })
+        await store.markIndexed(disabled)
+        #expect(await store.refresh(enabledAgents: both, includeTouchedFiles: false).isEmpty)
+    }
+
+    @Test func touchedFileGenerationChangeReparsesUnchangedSessionsOnce() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("first"),
+                try CodexScannerTests.fileToolCall("read_file", path: "Sources/Generation.swift"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeTouchedFiles: true)
+        await store.markIndexed(initial)
+
+        // Simulate an older extraction generation while preserving the rest of
+        // the valid cache, including indexedIDs and unchanged file metadata.
+        let cached = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        let olderGeneration = cached.replacingOccurrences(
+            of: "\"touchedFileExtractionGeneration\":\(TouchedFilePolicy.extractionGeneration)",
+            with: "\"touchedFileExtractionGeneration\":0"
+        )
+        #expect(olderGeneration != cached)
+        try olderGeneration.write(to: env.cacheURL, atomically: true, encoding: .utf8)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let migrated = await relaunched.refresh(enabledAgents: both, includeTouchedFiles: true)
+        #expect(migrated.upserts.count == 1)
+        #expect(migrated.upserts.first?.touchedFilePaths == ["Sources/Generation.swift"])
+        await relaunched.markIndexed(migrated)
+        #expect(await relaunched.refresh(enabledAgents: both, includeTouchedFiles: true).isEmpty)
+    }
+
+    @Test func disablingTouchedFileSearchAfterRelaunchRedonatesCachedSessions() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("first"),
+                try CodexScannerTests.fileToolCall("read_file", path: "Sources/PrivatePath.swift"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let enabled = await store.refresh(enabledAgents: both, includeTouchedFiles: true)
+        await store.markIndexed(enabled)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let disabled = await relaunched.refresh(enabledAgents: both, includeTouchedFiles: false)
+        #expect(disabled.upserts.count == 1)
+        #expect(disabled.upserts.first?.touchedFilePaths.isEmpty == true)
+        #expect(disabled.upserts.first?.spotlightKeywords(includeTouchedFiles: false).contains("PrivatePath.swift") == false)
+    }
+
+    @Test func touchedFileHydrationSurvivesTransientEnumerationFailure() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                ClaudeScannerTests.user("first"),
+                try ClaudeScannerTests.fileToolUse("Read", path: "Sources/Eventually.swift"),
+            ].joined(separator: "\n") + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.claude], includeTouchedFiles: false)
+        await store.markIndexed(initial)
+
+        let root = env.claudeHome.appendingPathComponent("projects")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
+        let deferred = await store.refresh(enabledAgents: [.claude], includeTouchedFiles: true)
+        #expect(deferred.isEmpty)
+        #expect(await store.record(id: "claude:\(ClaudeScannerTests.uuid)") != nil)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        let hydrated = await store.refresh(enabledAgents: [.claude], includeTouchedFiles: true)
+        #expect(hydrated.upserts.first?.touchedFilePaths == ["Sources/Eventually.swift"])
+    }
+
+    @Test func touchedFilesFollowDuplicateRolloutWinnerWithoutDelay() async throws {
+        let env = try makeEnv()
+        let oldRel = "sessions/2026/08/01/rollout-old-\(CodexScannerTests.uuid).jsonl"
+        let newRel = "sessions/2026/08/05/rollout-new-\(CodexScannerTests.uuid).jsonl"
+        let oldURL = try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("old"),
+                try CodexScannerTests.fileToolCall("read_file", path: "Sources/Old.swift"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(oldRel))
+        let newURL = try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("new"),
+                try CodexScannerTests.fileToolCall("read_file", path: "Sources/New.swift"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(newRel))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -86_400)],
+            ofItemAtPath: oldURL.path)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex], includeTouchedFiles: true)
+        #expect(initial.upserts.first?.touchedFilePaths == ["Sources/New.swift"])
+        await store.markIndexed(initial)
+
+        try FileManager.default.removeItem(at: newURL)
+        let fallback = await store.refresh(enabledAgents: [.codex], includeTouchedFiles: true)
+        #expect(fallback.deletedIDs.isEmpty)
+        #expect(fallback.upserts.first?.touchedFilePaths == ["Sources/Old.swift"])
+    }
+
     @Test func displayTitlePriorities() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "索引里的标题")
