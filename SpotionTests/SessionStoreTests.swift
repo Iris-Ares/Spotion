@@ -651,6 +651,20 @@ import Testing
         #expect(await store.record(id: "codex:\(CodexScannerTests.uuid)") == nil)
     }
 
+    @Test func archivedSessionsDoNotPopulateQuickCreateProjects() async throws {
+        let env = try makeEnv()
+        try writeArchivedCodexSession(env)
+        let store = makeStore(env)
+        await store.bootstrap()
+
+        _ = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(await store.distinctProjects().isEmpty)
+
+        try writeClaudeSession(env)
+        _ = await store.refresh(enabledAgents: both, includeArchivedCodex: true)
+        #expect(await store.distinctProjects().map(\.cwd) == ["/tmp/proj"])
+    }
+
     @Test func rolloutMoveKeepsStableIDAndTransitionsArchiveState() async throws {
         let env = try makeEnv()
         try writeCodexSession(env)
