@@ -90,6 +90,12 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "searchLaterPrompts") }
     }
 
+    /// Privacy-sensitive structured file-path metadata. Missing means off.
+    static var searchTouchedFiles: Bool {
+        get { d.bool(forKey: "searchTouchedFiles") }
+        set { d.set(newValue, forKey: "searchTouchedFiles") }
+    }
+
     private static func nonEmpty(_ s: String?) -> String? {
         guard let s, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return s

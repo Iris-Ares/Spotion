@@ -32,14 +32,23 @@ protocol SessionScanner: Sendable {
     /// [] = root empty or missing → a legitimate result, deletions proceed.
     func enumerateFiles() -> [ScannedFile]?
     /// Bounded-read parse; see ParseOutcome for the tri-state semantics.
-    func parse(_ file: ScannedFile, includeLaterPrompts: Bool) -> ParseOutcome
+    func parse(
+        _ file: ScannedFile,
+        includeLaterPrompts: Bool,
+        includeTouchedFiles: Bool
+    ) -> ParseOutcome
 }
 
 extension SessionScanner {
     /// Existing call sites and focused parser tests exercise the privacy-safe
-    /// default: later prompts are not read or retained.
+    /// default: neither later prompts nor touched-file paths are read or
+    /// retained.
     func parse(_ file: ScannedFile) -> ParseOutcome {
-        parse(file, includeLaterPrompts: false)
+        parse(file, includeLaterPrompts: false, includeTouchedFiles: false)
+    }
+
+    func parse(_ file: ScannedFile, includeLaterPrompts: Bool) -> ParseOutcome {
+        parse(file, includeLaterPrompts: includeLaterPrompts, includeTouchedFiles: false)
     }
 
     func statted(_ url: URL) -> ScannedFile? {

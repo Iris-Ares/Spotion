@@ -70,11 +70,30 @@ struct CodexScanner: SessionScanner {
         var payload: Payload
     }
 
+    private struct ToolCallLine: Decodable {
+        struct Payload: Decodable {
+            var type: String?
+            var name: String?
+            var namespace: String?
+            var arguments: String?
+        }
+        var payload: Payload
+    }
+
+    private struct FileToolArguments: Decodable {
+        var path: String?
+        var file_path: String?
+    }
+
     /// The session_meta line can carry giant base_instructions; the window
     /// expands on demand when a fixed window would truncate it.
     private static let maxHeadCap = 4 * 1024 * 1024
 
-    func parse(_ file: ScannedFile, includeLaterPrompts: Bool) -> ParseOutcome {
+    func parse(
+        _ file: ScannedFile,
+        includeLaterPrompts: Bool,
+        includeTouchedFiles: Bool
+    ) -> ParseOutcome {
         var cap = 512 * 1024
         var best: SessionRecord?
         while true {
@@ -91,11 +110,21 @@ struct CodexScanner: SessionScanner {
             // the first user_message past the current window. At the 4MB cap /
             // file end, accept what we have (no prompt → project-name title).
             if let record = best, record.firstPrompt != nil {
-                return addingLaterPrompts(to: record, file: file, enabled: includeLaterPrompts)
+                return addingTransientMetadata(
+                    to: record,
+                    file: file,
+                    includeLaterPrompts: includeLaterPrompts,
+                    includeTouchedFiles: includeTouchedFiles
+                )
             }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
                 guard let best else { return .unusable }
-                return addingLaterPrompts(to: best, file: file, enabled: includeLaterPrompts)
+                return addingTransientMetadata(
+                    to: best,
+                    file: file,
+                    includeLaterPrompts: includeLaterPrompts,
+                    includeTouchedFiles: includeTouchedFiles
+                )
             }
             cap *= 2
         }
@@ -138,6 +167,7 @@ struct CodexScanner: SessionScanner {
             fallbackTitle: nil,
             firstPrompt: firstPrompt,
             laterPromptSnippets: [],
+            touchedFileBasePath: meta.cwd,
             cwd: cwd,
             projectName: (cwd as NSString).lastPathComponent,
             gitBranch: nil,
@@ -148,28 +178,70 @@ struct CodexScanner: SessionScanner {
         ))
     }
 
-    private func addingLaterPrompts(
+    private func addingTransientMetadata(
         to record: SessionRecord,
         file: ScannedFile,
-        enabled: Bool
+        includeLaterPrompts: Bool,
+        includeTouchedFiles: Bool
     ) -> ParseOutcome {
-        guard enabled else { return .record(record) }
+        guard includeLaterPrompts || includeTouchedFiles else { return .record(record) }
         guard let lines = try? JSONLReader.tailLines(
-            of: URL(fileURLWithPath: file.path), cap: PromptSnippetPolicy.tailReadCap
+            of: URL(fileURLWithPath: file.path),
+            cap: max(PromptSnippetPolicy.tailReadCap, TouchedFilePolicy.tailReadCap)
         ) else { return .ioFailure }
 
         let decoder = JSONDecoder()
-        let prompts = lines.compactMap { data -> String? in
-            guard let event = try? decoder.decode(EventLine.self, from: data),
-                  event.payload.type == "user_message",
-                  let message = event.payload.message,
-                  PromptSnippetPolicy.isRealPrompt(message) else { return nil }
-            return message
+        var prompts: [String] = []
+        var toolPaths: [String] = []
+        for data in lines {
+            if includeLaterPrompts,
+               let event = try? decoder.decode(EventLine.self, from: data),
+               event.payload.type == "user_message",
+               let message = event.payload.message,
+               PromptSnippetPolicy.isRealPrompt(message) {
+                prompts.append(message)
+            }
+            if includeTouchedFiles, let path = Self.structuredFilePath(from: data, decoder: decoder) {
+                toolPaths.append(path)
+            }
         }
         var updated = record
-        updated.laterPromptSnippets = PromptSnippetPolicy.mostRecent(
-            prompts, excluding: record.firstPrompt)
+        if includeLaterPrompts {
+            updated.laterPromptSnippets = PromptSnippetPolicy.mostRecent(
+                prompts, excluding: record.firstPrompt)
+        }
+        if includeTouchedFiles, let cwd = record.touchedFileBasePath {
+            updated.touchedFilePaths = TouchedFilePolicy.mostRecent(
+                toolPaths,
+                relativeTo: cwd,
+                caseSensitive: TouchedFilePolicy.volumeIsCaseSensitive(at: cwd)
+            )
+        }
+        if includeTouchedFiles {
+            updated.touchedFileHydrationGeneration = TouchedFilePolicy.extractionGeneration
+        }
         return .record(updated)
+    }
+
+    /// Codex records function-call arguments separately from tool output. Only
+    /// exact file-tool names and explicit path fields are accepted. Shell
+    /// commands, apply_patch input, MCP names, and outputs stay excluded.
+    private static func structuredFilePath(from data: Data, decoder: JSONDecoder) -> String? {
+        guard let line = try? decoder.decode(ToolCallLine.self, from: data),
+              line.payload.type == "function_call",
+              line.payload.namespace == nil,
+              let name = line.payload.name,
+              let rawArguments = line.payload.arguments,
+              let argumentData = rawArguments.data(using: .utf8),
+              let arguments = try? decoder.decode(FileToolArguments.self, from: argumentData)
+        else { return nil }
+
+        return switch name {
+        case "read_file", "write_file", "edit_file", "replace_file":
+            arguments.path ?? arguments.file_path
+        default:
+            nil
+        }
     }
 
     /// rollout-2026-08-05T14-16-25-<uuid>.jsonl → last 36 characters of the stem.

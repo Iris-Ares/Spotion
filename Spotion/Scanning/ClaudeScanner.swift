@@ -60,6 +60,13 @@ struct ClaudeScanner: SessionScanner {
             struct Block: Decodable {
                 var type: String?
                 var text: String?
+                var name: String?
+                var input: ToolInput?
+            }
+
+            struct ToolInput: Decodable {
+                var file_path: String?
+                var notebook_path: String?
             }
 
             init(from decoder: Decoder) throws {
@@ -101,7 +108,11 @@ struct ClaudeScanner: SessionScanner {
     /// unusable.
     private static let maxHeadCap = 4 * 1024 * 1024
 
-    func parse(_ file: ScannedFile, includeLaterPrompts: Bool) -> ParseOutcome {
+    func parse(
+        _ file: ScannedFile,
+        includeLaterPrompts: Bool,
+        includeTouchedFiles: Bool
+    ) -> ParseOutcome {
         var cap = 256 * 1024
         var best: SessionRecord?
         while true {
@@ -119,11 +130,21 @@ struct ClaudeScanner: SessionScanner {
             // large assistant record). At the 4MB cap / file end, accept what
             // we have (no prompt → tail-title / project-name fallback).
             if let record = best, record.firstPrompt != nil {
-                return addingLaterPrompts(to: record, file: file, enabled: includeLaterPrompts)
+                return addingTransientMetadata(
+                    to: record,
+                    file: file,
+                    includeLaterPrompts: includeLaterPrompts,
+                    includeTouchedFiles: includeTouchedFiles
+                )
             }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
                 guard let best else { return .unusable }
-                return addingLaterPrompts(to: best, file: file, enabled: includeLaterPrompts)
+                return addingTransientMetadata(
+                    to: best,
+                    file: file,
+                    includeLaterPrompts: includeLaterPrompts,
+                    includeTouchedFiles: includeTouchedFiles
+                )
             }
             cap *= 2
         }
@@ -167,6 +188,7 @@ struct ClaudeScanner: SessionScanner {
             fallbackTitle: titles.custom ?? titles.ai ?? titles.lastPrompt,
             firstPrompt: firstPrompt,
             laterPromptSnippets: [],
+            touchedFileBasePath: cwd,
             cwd: cwd,
             projectName: (cwd as NSString).lastPathComponent,
             gitBranch: gitBranch,
@@ -177,30 +199,65 @@ struct ClaudeScanner: SessionScanner {
         ))
     }
 
-    private func addingLaterPrompts(
+    private func addingTransientMetadata(
         to record: SessionRecord,
         file: ScannedFile,
-        enabled: Bool
+        includeLaterPrompts: Bool,
+        includeTouchedFiles: Bool
     ) -> ParseOutcome {
-        guard enabled else { return .record(record) }
+        guard includeLaterPrompts || includeTouchedFiles else { return .record(record) }
         guard let lines = try? JSONLReader.tailLines(
-            of: URL(fileURLWithPath: file.path), cap: PromptSnippetPolicy.tailReadCap
+            of: URL(fileURLWithPath: file.path),
+            cap: max(PromptSnippetPolicy.tailReadCap, TouchedFilePolicy.tailReadCap)
         ) else { return .ioFailure }
 
         let decoder = JSONDecoder()
-        let prompts = lines.compactMap { data -> String? in
+        var prompts: [String] = []
+        var toolPaths: [String] = []
+        for data in lines {
             guard let envelope = try? decoder.decode(Envelope.self, from: data),
-                  envelope.type == "user",
-                  envelope.isSidechain != true,
-                  envelope.message?.role == "user",
-                  let text = envelope.message?.content?.plainText,
-                  PromptSnippetPolicy.isRealPrompt(text) else { return nil }
-            return text
+                  envelope.isSidechain != true else { continue }
+            if includeLaterPrompts,
+               envelope.type == "user",
+               envelope.message?.role == "user",
+               let text = envelope.message?.content?.plainText,
+               PromptSnippetPolicy.isRealPrompt(text) {
+                prompts.append(text)
+            }
+            if includeTouchedFiles,
+               envelope.type == "assistant",
+               envelope.message?.role == "assistant",
+               case .blocks(let blocks) = envelope.message?.content {
+                toolPaths.append(contentsOf: blocks.compactMap(Self.structuredFilePath))
+            }
         }
         var updated = record
-        updated.laterPromptSnippets = PromptSnippetPolicy.mostRecent(
-            prompts, excluding: record.firstPrompt)
+        if includeLaterPrompts {
+            updated.laterPromptSnippets = PromptSnippetPolicy.mostRecent(
+                prompts, excluding: record.firstPrompt)
+        }
+        if includeTouchedFiles, let cwd = record.touchedFileBasePath {
+            updated.touchedFilePaths = TouchedFilePolicy.mostRecent(
+                toolPaths,
+                relativeTo: cwd,
+                caseSensitive: TouchedFilePolicy.volumeIsCaseSensitive(at: cwd)
+            )
+        }
+        if includeTouchedFiles {
+            updated.touchedFileHydrationGeneration = TouchedFilePolicy.extractionGeneration
+        }
         return .record(updated)
+    }
+
+    /// Claude tool_use blocks are structured separately from tool_result and
+    /// prose. Only explicit file-operation fields are accepted.
+    private static func structuredFilePath(_ block: Envelope.Content.Block) -> String? {
+        guard block.type == "tool_use", let name = block.name, let input = block.input else { return nil }
+        return switch name {
+        case "Read", "Write", "Edit", "MultiEdit": input.file_path
+        case "NotebookEdit": input.notebook_path
+        default: nil
+        }
     }
 
     /// Excludes slash-command wrappers (<command-name>…) and the caveat notes
