@@ -1,7 +1,10 @@
 import AppIntents
 
 /// Shortcuts / Siri phrases (Spotlight actions do not depend on this, but it
-/// is cheap to provide).
+/// is cheap to provide). macOS allows at most 10 App Shortcuts per app and
+/// this list is at the cap; further intents (fork, copy command, resume from
+/// PR…) stay reachable through Spotlight and the Shortcuts app without a
+/// Siri phrase.
 struct SpotionShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(

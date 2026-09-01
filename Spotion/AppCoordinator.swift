@@ -485,6 +485,18 @@ final class AppCoordinator {
         return try await openSession(id: selected.id)
     }
 
+    /// Resolve the exact current store record, then fork it through the
+    /// terminal CLI. This does not consult or change the native-app preference
+    /// because the native deep links have no explicit fork semantics.
+    func forkSession(id: String) async throws -> TerminalApp {
+        await ensureReady()
+        guard let record = await store.record(id: id) else {
+            throw SpotionError.sessionNotFound(id)
+        }
+        try await TerminalLauncher.shared.fork(record)
+        return SpotionSettings.terminal
+    }
+
     // MARK: - Entity query support (AppIntents)
 
     func entities(for identifiers: [String]) async -> [SessionEntity] {

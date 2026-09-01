@@ -637,6 +637,21 @@ import Testing
         #expect(await store.latest(agent: .codex, projectCWD: nil) == nil)
     }
 
+    @Test func exactLaunchLookupReturnsSelectedRecordAndNoFallback() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+
+        let selectedID = "codex:\(CodexScannerTests.uuid)"
+        let selected = try #require(await store.record(id: selectedID))
+        #expect(selected.id == selectedID)
+        #expect(selected.sessionID == CodexScannerTests.uuid)
+        #expect(await store.record(id: "codex:missing") == nil)
+    }
+
     @Test func codexTitleRemovalTriggersReindex() async throws {
         // A title entry vanished from session_index.jsonl → the session must be
         // re-donated (otherwise Spotlight keeps the stale title)
