@@ -368,6 +368,26 @@ actor SessionStore {
 
     func record(id: String) -> SessionRecord? { records[id] }
 
+    /// Deterministically select the newest record for one agent and optional
+    /// project. Project matching is lexical and component-aware after path
+    /// standardization; it never falls back to similarly named directories.
+    func latest(agent: AgentKind, projectCWD: String?) -> SessionRecord? {
+        let normalizedProject = projectCWD.map(Self.normalizedProjectPath)
+        return records.values
+            .filter { record in
+                guard record.agent == agent else { return false }
+                guard let normalizedProject else { return true }
+                return Self.normalizedProjectPath(record.cwd) == normalizedProject
+            }
+            .sorted { lhs, rhs in
+                if lhs.lastActivityAt != rhs.lastActivityAt {
+                    return lhs.lastActivityAt > rhs.lastActivityAt
+                }
+                return lhs.sessionID < rhs.sessionID
+            }
+            .first
+    }
+
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
         var result = Array(records.values)
         if let query {
@@ -428,6 +448,11 @@ actor SessionStore {
             lines.append("[\(record.agent.rawValue)] \(displayTitle(for: record)) — \(record.projectName) — \(record.lastActivityAt)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func normalizedProjectPath(_ raw: String) -> String {
+        let expanded = (raw as NSString).expandingTildeInPath
+        return (expanded as NSString).standardizingPath
     }
 
     // MARK: - Persistence

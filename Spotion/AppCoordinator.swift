@@ -17,10 +17,17 @@ final class UIState {
 
 enum SpotionError: LocalizedError {
     case sessionNotFound(String)
+    case noMatchingSession(agent: AgentKind, projectCWD: String?)
 
     var errorDescription: String? {
         switch self {
         case .sessionNotFound(let id): "会话已不存在：\(id)"
+        case .noMatchingSession(let agent, let projectCWD):
+            if let projectCWD {
+                "未找到 \(agent.displayName) 在 \((projectCWD as NSString).lastPathComponent) 中的会话。"
+            } else {
+                "未找到可继续的 \(agent.displayName) 会话。"
+            }
         }
     }
 }
@@ -333,6 +340,21 @@ final class AppCoordinator {
         case .nativeApp:
             return .nativeApp(appName: try await NativeAppLauncher.shared.resume(record))
         }
+    }
+
+    /// Select from one consistent store snapshot, then re-enter the existing
+    /// exact-ID open path. If the selected record disappears before dispatch,
+    /// openSession's authoritative missing-session error wins.
+    func continueLatestSession(
+        agent: AgentKind,
+        projectCWD: String?
+    ) async throws -> LaunchDestination {
+        await ensureReady()
+        guard SpotionSettings.enabledAgents.contains(agent),
+              let selected = await store.latest(agent: agent, projectCWD: projectCWD) else {
+            throw SpotionError.noMatchingSession(agent: agent, projectCWD: projectCWD)
+        }
+        return try await openSession(id: selected.id)
     }
 
     // MARK: - Entity query support (AppIntents)
