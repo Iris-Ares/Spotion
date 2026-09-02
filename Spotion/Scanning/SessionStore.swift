@@ -27,7 +27,15 @@ struct ProjectInfo: Sendable, Hashable {
 struct TitledSession: Sendable, Hashable {
     var record: SessionRecord
     var title: String
+    /// Agent-derived title before a Spotion-only alias is applied.
+    var sourceTitle: String
     var isPinned = false
+}
+
+enum AliasUpdateResult: Sendable, Equatable {
+    case changed
+    case unchanged
+    case unknownSession
 }
 
 struct SessionMenuSections: Sendable, Equatable {
@@ -51,6 +59,7 @@ actor SessionStore {
     private var hiddenStateRuntimeError: String?
     private var projectExclusions: ProjectExclusionStore
     private var pinnedStore: PinnedSessionStore
+    private var aliasStore: SessionAliasStore
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -79,7 +88,8 @@ actor SessionStore {
         claudeScanner: ClaudeScanner?,
         historyWindow: SpotlightHistoryWindow = .all,
         now: Date = Date(),
-        pinnedSessionsURL: URL? = nil
+        pinnedSessionsURL: URL? = nil,
+        aliasesURL: URL? = nil
     ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
@@ -93,6 +103,9 @@ actor SessionStore {
         pinnedStore = PinnedSessionStore(
             url: pinnedSessionsURL
                 ?? cacheURL.deletingLastPathComponent().appendingPathComponent("pinned-sessions-v1.json"))
+        aliasStore = SessionAliasStore(
+            url: aliasesURL
+                ?? cacheURL.deletingLastPathComponent().appendingPathComponent("session-aliases-v1.json"))
         self.historyWindow = historyWindow
         historyReferenceDate = now
     }
@@ -103,6 +116,7 @@ actor SessionStore {
         hiddenSessions.load()
         projectExclusions.load()
         pinnedStore.bootstrap()
+        aliasStore.bootstrap()
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
@@ -113,10 +127,10 @@ actor SessionStore {
         }
         cache = loaded
         rebuildRecords()
-        if pinnedStore.recoveredFromCorruption {
-            // Spotlight may still retain the higher priority donated from the
-            // unreadable payload. Re-donate cached records at standard priority
-            // so the index matches the safe empty-pin fallback.
+        if pinnedStore.recoveredFromCorruption || aliasStore.loadWarning != nil {
+            // Spotlight may still carry priority or titles donated from a now
+            // unreadable sidecar. Re-donate every cached record from source
+            // metadata so the index matches the safe empty fallback.
             cache.dirtyIDs.formUnion(records.keys)
             persist()
         }
@@ -273,15 +287,19 @@ actor SessionStore {
         }
 
         // Parse changed files in parallel (pure value functions, I/O bound)
-        let parsed = await withTaskGroup(of: (ScannedFile, ParseOutcome).self) { group in
+        let parsed = await withTaskGroup(of: (ScannedFile, AgentKind, ParseOutcome).self) { group in
             for (scanner, file) in toParse {
-                group.addTask { (file, scanner.parse(file, includeLaterPrompts: includeLaterPrompts)) }
+                group.addTask {
+                    (file, scanner.agent, scanner.parse(file, includeLaterPrompts: includeLaterPrompts))
+                }
             }
-            var results: [(ScannedFile, ParseOutcome)] = []
+            var results: [(ScannedFile, AgentKind, ParseOutcome)] = []
             for await item in group { results.append(item) }
             return results
         }
-        for (file, outcome) in parsed {
+        var incompleteAgents = Set<AgentKind>()
+        for (file, agent, outcome) in parsed {
+            if outcome.record == nil { incompleteAgents.insert(agent) }
             // I/O failure: do NOT touch the cache entry. The kept entry's stale
             // mtime/size guarantee a re-parse attempt on the next refresh once
             // the file is readable again — caching nil here would evict the
@@ -336,7 +354,12 @@ actor SessionStore {
         rebuildRecords()
 
         let currentIDs = Set(records.keys)
-        let trustworthyAgents = Set(roots.filter { $0.enabled && $0.trustworthy }.map(\.agent))
+        // One definition of "this agent's record set is complete this cycle":
+        // enabled, root enumerated, every transcript parsed. Only then may
+        // Spotion-only sidecar state (hidden, pins, aliases) be pruned for it;
+        // disabled agents and transient failures keep their state.
+        let verifiedAgents = Set(roots.filter { $0.enabled && $0.trustworthy }.map(\.agent))
+            .subtracting(incompleteAgents)
         if hiddenSessions.isAvailable {
             // A transcript path that was enumerated but could not currently be
             // parsed is not evidence that the source disappeared. Preserve its
@@ -348,7 +371,7 @@ actor SessionStore {
             do {
                 _ = try hiddenSessions.pruneMissing(
                     validIDs: currentIDs.union(observedHiddenIDs),
-                    trustworthyAgents: trustworthyAgents)
+                    trustworthyAgents: verifiedAgents)
                 hiddenStateRuntimeError = nil
             } catch {
                 // Retaining stale hidden entries is privacy-safe. Surface the
@@ -357,16 +380,19 @@ actor SessionStore {
             }
         }
 
-        // Pins are independent from the scan cache, but only current sessions
-        // may remain pinned. Prune only from a complete snapshot (every enabled
-        // root enumerated); disabled roots count as trustworthy so their pins
-        // go away together with their sessions.
-        if roots.allSatisfy({ !$0.enabled || $0.trustworthy }) {
-            do {
-                try pinnedStore.prune(validIDs: Set(records.keys))
-            } catch {
-                NSLog("Spotion: pinned session prune failed: %@", error.localizedDescription)
-            }
+        // Pins and aliases are independent from the scan cache, but only
+        // current sessions may keep them; ids of unverified agents are retained.
+        do {
+            try pinnedStore.prune(
+                validIDs: currentIDs.union(unverifiedIDs(pinnedStore.sessionIDs, verified: verifiedAgents)))
+        } catch {
+            NSLog("Spotion: pinned session prune failed: %@", error.localizedDescription)
+        }
+        do {
+            try aliasStore.prune(
+                validIDs: currentIDs.union(unverifiedIDs(aliasStore.aliases.keys, verified: verifiedAgents)))
+        } catch {
+            NSLog("Spotion: stale alias prune failed: %@", error.localizedDescription)
         }
 
         // A deleted/corrupted winning rollout may reveal an unchanged fallback
@@ -542,6 +568,8 @@ actor SessionStore {
             if !needle.isEmpty {
                 result = result.filter {
                     displayTitle(for: $0).lowercased().contains(needle)
+                        || sourceTitle(for: $0).lowercased().contains(needle)
+                        || ($0.gitBranch?.lowercased().contains(needle) ?? false)
                         || $0.projectName.lowercased().contains(needle)
                         || $0.cwd.lowercased().contains(needle)
                         || $0.sessionID.lowercased() == needle
@@ -564,9 +592,14 @@ actor SessionStore {
             .sorted { $0.lastUsed > $1.lastUsed }
     }
 
+    /// Spotion alias > agent title (see `sourceTitle`).
+    func displayTitle(for record: SessionRecord) -> String {
+        aliasStore.alias(for: record.id) ?? sourceTitle(for: record)
+    }
+
     /// codex: session_index title > first prompt > project name;
     /// claude: tail title records > first prompt > project name.
-    func displayTitle(for record: SessionRecord) -> String {
+    func sourceTitle(for record: SessionRecord) -> String {
         let raw: String? = switch record.agent {
         case .codex: cache.codexTitles[record.sessionID] ?? record.firstPrompt
         case .claude: record.fallbackTitle ?? record.firstPrompt
@@ -577,7 +610,11 @@ actor SessionStore {
 
     func titled(records: [SessionRecord]) -> [TitledSession] {
         records.map {
-            TitledSession(record: $0, title: displayTitle(for: $0), isPinned: pinnedStore.contains($0.id))
+            TitledSession(
+                record: $0,
+                title: displayTitle(for: $0),
+                sourceTitle: sourceTitle(for: $0),
+                isPinned: pinnedStore.contains($0.id))
         }
     }
 
@@ -591,17 +628,7 @@ actor SessionStore {
         guard records[id] != nil else { return .unknownSession }
         guard pinnedStore.contains(id) != pinned else { return .unchanged }
 
-        // Persist the re-donation obligation before committing the independent
-        // pin file. If the process exits between these writes, the next launch
-        // still reconciles Spotlight with whichever pin state reached disk.
-        let wasDirty = cache.dirtyIDs.contains(id)
-        cache.dirtyIDs.insert(id)
-        do {
-            try persistCache()
-        } catch {
-            if !wasDirty { cache.dirtyIDs.remove(id) }
-            throw error
-        }
+        try persistRedonationObligation(for: id)
 
         // A failed pin write may leave one harmless extra re-donation queued;
         // it must not erase the already-durable retry obligation.
@@ -631,6 +658,54 @@ actor SessionStore {
             recent: titled(records: Array(recentRecords)))
     }
 
+    // MARK: - Spotion-only aliases
+
+    func setAlias(id: String, alias: String) throws -> AliasUpdateResult {
+        guard records[id] != nil else { return .unknownSession }
+        let normalized = alias.titleSanitized
+        guard !normalized.isEmpty else { throw SessionAliasError.empty }
+        guard aliasStore.alias(for: id) != normalized else { return .unchanged }
+        try persistRedonationObligation(for: id)
+        // A failed alias write may leave one harmless extra re-donation queued;
+        // it must not erase the already-durable retry obligation.
+        _ = try aliasStore.setAlias(normalized, for: id)
+        return .changed
+    }
+
+    func clearAlias(id: String) throws -> AliasUpdateResult {
+        guard records[id] != nil else { return .unknownSession }
+        guard aliasStore.alias(for: id) != nil else { return .unchanged }
+        try persistRedonationObligation(for: id)
+        _ = try aliasStore.clearAlias(for: id)
+        return .changed
+    }
+
+    func aliases() -> [String: String] {
+        aliasStore.aliases
+    }
+
+    /// Persist the Spotlight re-donation obligation before committing an
+    /// independent sidecar write. If the process exits between the two, the
+    /// next launch still reconciles Spotlight with whichever state reached disk.
+    private func persistRedonationObligation(for id: String) throws {
+        let wasDirty = cache.dirtyIDs.contains(id)
+        cache.dirtyIDs.insert(id)
+        do {
+            try persistCache()
+        } catch {
+            if !wasDirty { cache.dirtyIDs.remove(id) }
+            throw error
+        }
+    }
+
+    /// Sidecar ids whose agent could not be verified this cycle.
+    private func unverifiedIDs(_ ids: some Sequence<String>, verified: Set<AgentKind>) -> Set<String> {
+        let unverifiedPrefixes = AgentKind.allCases
+            .filter { !verified.contains($0) }
+            .map { "\($0.rawValue):" }
+        return Set(ids.filter { id in unverifiedPrefixes.contains { id.hasPrefix($0) } })
+    }
+
     // MARK: - Spotion-only hidden sessions
 
     func hideSession(id: String) throws -> Bool {
@@ -639,7 +714,7 @@ actor SessionStore {
         let snapshot = HiddenSessionSnapshot(
             id: id,
             agent: record.agent,
-            title: displayTitle(for: record),
+            title: sourceTitle(for: record),
             projectName: record.projectName,
             cwd: record.cwd,
             filePath: record.filePath)
@@ -684,7 +759,8 @@ actor SessionStore {
 
     /// Non-fatal state problems worth showing in Settings.
     func warnings() -> [String] {
-        [hiddenStateRuntimeError ?? hiddenSessions.statusMessage, projectExclusions.statusMessage]
+        [hiddenStateRuntimeError ?? hiddenSessions.statusMessage, projectExclusions.statusMessage,
+         aliasStore.loadWarning]
             .compactMap { $0 }
     }
 

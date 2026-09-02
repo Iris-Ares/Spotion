@@ -52,5 +52,17 @@ struct SpotionShortcuts: AppShortcutsProvider {
             shortTitle: "Unpin Session",
             systemImageName: "pin.slash"
         )
+        AppShortcut(
+            intent: SetSessionAliasIntent(),
+            phrases: ["Set a session alias in \(.applicationName)"],
+            shortTitle: "Set Session Alias",
+            systemImageName: "pencil"
+        )
+        AppShortcut(
+            intent: ClearSessionAliasIntent(),
+            phrases: ["Clear a session alias in \(.applicationName)"],
+            shortTitle: "Clear Session Alias",
+            systemImageName: "pencil.slash"
+        )
     }
 }
