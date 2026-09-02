@@ -22,5 +22,17 @@ struct SpotionShortcuts: AppShortcutsProvider {
             shortTitle: "Reindex Sessions",
             systemImageName: "arrow.clockwise"
         )
+        AppShortcut(
+            intent: ContinueLatestCodexSessionIntent(),
+            phrases: ["Continue the latest Codex session in \(.applicationName)"],
+            shortTitle: "Continue Latest Codex",
+            systemImageName: "chevron.left.forwardslash.chevron.right"
+        )
+        AppShortcut(
+            intent: ContinueLatestClaudeSessionIntent(),
+            phrases: ["Continue the latest Claude session in \(.applicationName)"],
+            shortTitle: "Continue Latest Claude",
+            systemImageName: "asterisk.circle"
+        )
     }
 }

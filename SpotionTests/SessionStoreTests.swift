@@ -41,6 +41,41 @@ import Testing
             to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(uuid).jsonl"))
     }
 
+    @discardableResult
+    private func writeCodexSelectionFixture(
+        _ env: Env,
+        id: String,
+        cwd: String,
+        day: String,
+        mtime: Date
+    ) throws -> URL {
+        let relative = "sessions/2026/08/\(day)/rollout-2026-08-\(day)T10-00-00-\(id).jsonl"
+        let url = try TestSupport.write(
+            [
+                CodexScannerTests.meta(cwd: cwd, id: id),
+                CodexScannerTests.userMessage("selection fixture"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(relative)
+        )
+        try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
+        return url
+    }
+
+    @discardableResult
+    private func writeClaudeSelectionFixture(
+        _ env: Env,
+        id: String,
+        cwd: String,
+        mtime: Date
+    ) throws -> URL {
+        let url = try TestSupport.write(
+            ClaudeScannerTests.user("selection fixture", cwd: cwd) + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/selection/\(id).jsonl")
+        )
+        try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
+        return url
+    }
+
     private let both: Set<AgentKind> = [.codex, .claude]
 
     @Test func refreshUpsertsThenStable() async throws {
@@ -306,6 +341,76 @@ import Testing
         #expect(await store.displayTitle(for: codex) == "索引里的标题")
         let claude = try #require(await store.record(id: "claude:\(ClaudeScannerTests.uuid)"))
         #expect(await store.displayTitle(for: claude) == "Claude 标题")
+    }
+
+    @Test func latestSelectionIsAgentScopedAndUsesNormalizedExactProject() async throws {
+        let env = try makeEnv()
+        let base = Date(timeIntervalSince1970: 1_000)
+        let projectOld = "10000000-0000-0000-0000-000000000001"
+        let projectNew = "20000000-0000-0000-0000-000000000002"
+        let siblingNewer = "30000000-0000-0000-0000-000000000003"
+        let claudeNewest = "40000000-0000-0000-0000-000000000004"
+
+        try writeCodexSelectionFixture(
+            env, id: projectOld, cwd: "/tmp/work/project", day: "01", mtime: base)
+        try writeCodexSelectionFixture(
+            env, id: projectNew, cwd: "/tmp/work/./project/", day: "02",
+            mtime: base.addingTimeInterval(10))
+        try writeCodexSelectionFixture(
+            env, id: siblingNewer, cwd: "/tmp/work/project-old", day: "03",
+            mtime: base.addingTimeInterval(20))
+        try writeClaudeSelectionFixture(
+            env, id: claudeNewest, cwd: "/tmp/work/project", mtime: base.addingTimeInterval(30))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+
+        #expect(await store.latest(agent: .codex, projectCWD: nil)?.sessionID == siblingNewer)
+        #expect(await store.latest(
+            agent: .codex, projectCWD: "/tmp/work/project"
+        )?.sessionID == projectNew)
+        #expect(await store.latest(
+            agent: .claude, projectCWD: "/tmp/work/./project/"
+        )?.sessionID == claudeNewest)
+        #expect(await store.latest(agent: .claude, projectCWD: "/tmp/work/project-old") == nil)
+    }
+
+    @Test func latestSelectionUsesAscendingSessionIDForTimestampTies() async throws {
+        let env = try makeEnv()
+        let tied = Date(timeIntervalSince1970: 2_000)
+        let smaller = "10000000-0000-0000-0000-000000000001"
+        let larger = "90000000-0000-0000-0000-000000000009"
+        try writeCodexSelectionFixture(
+            env, id: larger, cwd: "/tmp/project", day: "01", mtime: tied)
+        try writeCodexSelectionFixture(
+            env, id: smaller, cwd: "/tmp/project", day: "02", mtime: tied)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: [.codex])
+
+        #expect(await store.latest(agent: .codex, projectCWD: nil)?.sessionID == smaller)
+        #expect(await store.latest(agent: .claude, projectCWD: nil) == nil)
+        #expect(await store.latest(agent: .codex, projectCWD: "/tmp/missing") == nil)
+    }
+
+    @Test func selectedRecordRemovalMakesExactLaunchLookupFail() async throws {
+        let env = try makeEnv()
+        let id = "50000000-0000-0000-0000-000000000005"
+        let url = try writeCodexSelectionFixture(
+            env, id: id, cwd: "/tmp/project", day: "01", mtime: Date())
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: [.codex])
+        let selected = try #require(await store.latest(agent: .codex, projectCWD: nil))
+
+        try FileManager.default.removeItem(at: url)
+        _ = await store.refresh(enabledAgents: [.codex])
+
+        #expect(await store.record(id: selected.id) == nil)
+        #expect(await store.latest(agent: .codex, projectCWD: nil) == nil)
     }
 
     @Test func codexTitleRemovalTriggersReindex() async throws {
