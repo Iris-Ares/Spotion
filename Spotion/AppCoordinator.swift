@@ -13,27 +13,14 @@ final class UIState {
     var lastError: String?
     var isScanning = false
     var recent: [TitledSession] = []
+    /// Sessions eligible for Spotlight vs. everything scanned (hidden and
+    /// otherwise filtered records stay in the cache but not in the index).
+    var visibleCount = 0
+    var totalCount = 0
+    /// Non-fatal state problems (recovered sidecar files etc.), refreshed
+    /// every cycle; `lastError` is reserved for the apply failure itself.
+    var warnings: [String] = []
     var hiddenSessions: [HiddenSessionSnapshot] = []
-}
-
-enum SpotionError: LocalizedError, Sendable {
-    case sessionNotFound(String)
-    case noMatchingSession(agent: AgentKind, projectCWD: String?)
-    case indexMutationPending(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .sessionNotFound(let id): "会话已不存在：\(id)"
-        case .noMatchingSession(let agent, let projectCWD):
-            if let projectCWD {
-                "未找到 \(agent.displayName) 在 \((projectCWD as NSString).lastPathComponent) 中的会话。"
-            } else {
-                "未找到可继续的 \(agent.displayName) 会话。"
-            }
-        case .indexMutationPending(let action):
-            "\(action) 已安全记录，但 Spotlight 尚未确认更新；Spotion 会在下次刷新和重启后继续重试。"
-        }
-    }
 }
 
 /// Wires up store / indexer / watcher; the single entry point for App Intents
@@ -273,7 +260,7 @@ final class AppCoordinator {
                 try await indexer.delete(ids: diff.deletedIDs)
             }
             await store.markIndexed(diff)
-            uiState.lastError = await store.hiddenStateMessage
+            uiState.lastError = nil
         } catch {
             applied = false
             uiState.lastError = error.localizedDescription
@@ -298,6 +285,9 @@ final class AppCoordinator {
         uiState.codexCount = stats.codexCount
         uiState.claudeCount = stats.claudeCount
         uiState.parseFailures = stats.parseFailures
+        uiState.visibleCount = stats.visibleCount
+        uiState.totalCount = stats.totalCount
+        uiState.warnings = await store.warnings()
         uiState.lastIndexed = Date()
         uiState.recent = await store.allTitled(limit: 5)
         uiState.hiddenSessions = await store.hiddenSessionSnapshots()

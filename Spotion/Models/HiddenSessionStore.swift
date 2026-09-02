@@ -23,66 +23,49 @@ enum HiddenSessionStoreError: LocalizedError, Sendable {
     }
 }
 
-/// Versioned persistence for Spotion-only hide state. It lives beside, but is
-/// independent from, the scan cache so cache resets and schema migrations do
-/// not make hidden sessions visible again.
+/// Spotion-only hide state. Fails closed: if neither the primary nor the
+/// mirror can be read, nothing is visible until the user restores the file —
+/// exposing a session the user hid is worse than an empty index.
 struct HiddenSessionStore: Sendable {
-    private struct State: Codable, Sendable {
-        static let currentVersion = 1
-
-        var version = currentVersion
-        var entries: [String: HiddenSessionSnapshot] = [:]
-    }
-
-    private let url: URL
-    private let recoveryURL: URL
-    private var state = State()
+    private let file: PersistedJSON<[String: HiddenSessionSnapshot]>
+    private var entries: [String: HiddenSessionSnapshot] = [:]
     private(set) var isAvailable = true
     private(set) var statusMessage: String?
 
     init(url: URL) {
-        self.url = url
-        recoveryURL = url.appendingPathExtension("recovery")
+        file = PersistedJSON(url: url, mirrorURL: url.appendingPathExtension("recovery"), version: 1)
     }
 
     mutating func load() {
-        state = State()
+        entries = [:]
         isAvailable = true
         statusMessage = nil
-
-        let manager = FileManager.default
-        let primaryExists = manager.fileExists(atPath: url.path)
-        let recoveryExists = manager.fileExists(atPath: recoveryURL.path)
-        guard primaryExists || recoveryExists else { return }
-
-        if let loaded = Self.decode(from: url) {
-            state = loaded
-            try? Self.write(loaded, to: recoveryURL)
-            return
-        }
-        if let recovered = Self.decode(from: recoveryURL) {
-            state = recovered
+        switch file.load() {
+        case .empty:
+            break
+        case .loaded(let loaded):
+            entries = loaded
+        case .recovered(let recovered):
+            entries = recovered
             statusMessage = "Hidden-session state was recovered from its safety copy."
-            try? Self.write(recovered, to: url)
-            return
+        case .unreadable:
+            isAvailable = false
+            statusMessage = HiddenSessionStoreError.unavailable.localizedDescription
         }
-
-        isAvailable = false
-        statusMessage = HiddenSessionStoreError.unavailable.localizedDescription
     }
 
-    var hiddenIDs: Set<String> { Set(state.entries.keys) }
+    var hiddenIDs: Set<String> { Set(entries.keys) }
 
     func contains(_ id: String) -> Bool {
-        state.entries[id] != nil
+        entries[id] != nil
     }
 
     func allowsVisibility(of id: String) -> Bool {
-        isAvailable && state.entries[id] == nil
+        isAvailable && entries[id] == nil
     }
 
     func snapshots() -> [HiddenSessionSnapshot] {
-        state.entries.values.sorted {
+        entries.values.sorted {
             let titleOrder = $0.title.localizedCaseInsensitiveCompare($1.title)
             return titleOrder == .orderedSame ? $0.id < $1.id : titleOrder == .orderedAscending
         }
@@ -90,21 +73,19 @@ struct HiddenSessionStore: Sendable {
 
     mutating func hide(_ snapshot: HiddenSessionSnapshot) throws -> Bool {
         try requireAvailable()
-        guard state.entries[snapshot.id] == nil else { return false }
-        let previous = state
-        state.entries[snapshot.id] = snapshot
+        guard entries[snapshot.id] == nil else { return false }
+        let previous = entries
+        entries[snapshot.id] = snapshot
         try persist(orRestore: previous)
-        statusMessage = nil
         return true
     }
 
     mutating func restore(id: String) throws -> Bool {
         try requireAvailable()
-        guard state.entries[id] != nil else { return false }
-        let previous = state
-        state.entries.removeValue(forKey: id)
+        guard entries[id] != nil else { return false }
+        let previous = entries
+        entries.removeValue(forKey: id)
         try persist(orRestore: previous)
-        statusMessage = nil
         return true
     }
 
@@ -116,15 +97,14 @@ struct HiddenSessionStore: Sendable {
         trustworthyAgents: Set<AgentKind>
     ) throws -> [String] {
         try requireAvailable()
-        let stale = state.entries.values.filter {
+        let stale = entries.values.filter {
             trustworthyAgents.contains($0.agent) && !validIDs.contains($0.id)
         }.map(\.id)
         guard !stale.isEmpty else { return [] }
 
-        let previous = state
-        for id in stale { state.entries.removeValue(forKey: id) }
+        let previous = entries
+        for id in stale { entries.removeValue(forKey: id) }
         try persist(orRestore: previous)
-        statusMessage = nil
         return stale.sorted()
     }
 
@@ -132,30 +112,13 @@ struct HiddenSessionStore: Sendable {
         guard isAvailable else { throw HiddenSessionStoreError.unavailable }
     }
 
-    private mutating func persist(orRestore previous: State) throws {
+    private mutating func persist(orRestore previous: [String: HiddenSessionSnapshot]) throws {
         do {
-            // Write the safety copy first. If the primary later becomes
-            // unreadable, a relaunch can recover the exact acknowledged state.
-            try Self.write(state, to: recoveryURL)
-            try Self.write(state, to: url)
+            try file.write(entries)
+            statusMessage = nil
         } catch {
-            state = previous
+            entries = previous
             throw HiddenSessionStoreError.writeFailed(error.localizedDescription)
         }
-    }
-
-    private static func decode(from url: URL) -> State? {
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(State.self, from: data),
-              decoded.version == State.currentVersion else { return nil }
-        return decoded
-    }
-
-    private static func write(_ state: State, to url: URL) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(state).write(to: url, options: .atomic)
     }
 }

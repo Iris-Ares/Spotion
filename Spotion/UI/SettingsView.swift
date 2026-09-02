@@ -218,9 +218,13 @@ private struct IndexSettingsTab: View {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
                 LabeledContent("Claude Code 会话", value: "\(state.claudeCount)")
                 LabeledContent("解析失败", value: "\(state.parseFailures)")
+                LabeledContent("Spotlight 可见", value: "\(state.visibleCount) / \(state.totalCount)")
                 LabeledContent("上次索引", value: state.lastIndexed.map { $0.formatted(date: .omitted, time: .standard) } ?? "—")
                 if let error = state.lastError {
                     Text(error).font(.caption).foregroundStyle(.red)
+                }
+                ForEach(state.warnings, id: \.self) { warning in
+                    Text(warning).font(.caption).foregroundStyle(.orange)
                 }
             }
             Section("维护") {

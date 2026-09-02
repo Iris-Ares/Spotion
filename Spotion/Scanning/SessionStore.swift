@@ -10,6 +10,9 @@ struct StoreStats: Sendable {
     var codexCount = 0
     var claudeCount = 0
     var parseFailures = 0
+    /// Records eligible for Spotlight after Spotion-only policies (hidden…).
+    var visibleCount = 0
+    var totalCount = 0
     var lastRefresh: Date?
 }
 
@@ -17,20 +20,6 @@ struct ProjectInfo: Sendable, Hashable {
     var cwd: String
     var name: String
     var lastUsed: Date
-}
-
-enum SessionStoreError: LocalizedError, Sendable {
-    case sessionNotFound(String)
-    case hiddenSessionSourceUnavailable(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .sessionNotFound(let id):
-            "Session no longer exists: \(id)"
-        case .hiddenSessionSourceUnavailable(let id):
-            "The hidden session source is unavailable and cannot be restored yet: \(id)"
-        }
-    }
 }
 
 /// Record plus its resolved display title (codex titles live in the store's
@@ -331,27 +320,27 @@ actor SessionStore {
             }
         }
 
-        let visibleCurrentIDs = hiddenSessions.isAvailable
-            ? currentIDs.subtracting(hiddenSessions.hiddenIDs)
-            : Set<String>()
+        let visibleIDs = Set(records.values.filter(isVisible).map(\.id))
         // Changed ids enter the dirty set and stay until markIndexed (donation
         // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
-        cache.dirtyIDs.formIntersection(visibleCurrentIDs)
-        let upsertIDs = cache.dirtyIDs.union(visibleCurrentIDs.subtracting(cache.indexedIDs))
+        cache.dirtyIDs.formIntersection(visibleIDs)
+        let upsertIDs = cache.dirtyIDs.union(visibleIDs.subtracting(cache.indexedIDs))
         let promptHydrationBlockedIDs = includeLaterPrompts ? Set(upsertIDs.filter {
             guard let path = records[$0]?.filePath else { return false }
             return cache.laterPromptPendingPaths.contains(path)
         }) : []
         let diff = SessionDiff(
             upserts: upsertIDs.subtracting(promptHydrationBlockedIDs).compactMap { records[$0] },
-            deletedIDs: Array(cache.indexedIDs.subtracting(visibleCurrentIDs))
+            deletedIDs: Array(cache.indexedIDs.subtracting(visibleIDs))
         )
 
         lastStats = StoreStats(
-            codexCount: visibleCurrentIDs.compactMap { records[$0] }.count(where: { $0.agent == .codex }),
-            claudeCount: visibleCurrentIDs.compactMap { records[$0] }.count(where: { $0.agent == .claude }),
+            codexCount: records.values.count(where: { $0.agent == .codex }),
+            claudeCount: records.values.count(where: { $0.agent == .claude }),
             parseFailures: cache.entries.values.count(where: { $0.record == nil }),
+            visibleCount: visibleIDs.count,
+            totalCount: records.count,
             lastRefresh: Date()
         )
         persist()
@@ -365,7 +354,7 @@ actor SessionStore {
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
-            if records[id] != nil, hiddenSessions.allowsVisibility(of: id) {
+            if let record = records[id], isVisible(record) {
                 cache.dirtyIDs.insert(id)
             } else {
                 // A system reindex request for a hidden id means an item is
@@ -420,9 +409,16 @@ actor SessionStore {
 
     // MARK: - Queries
 
+    /// The single Spotion-only visibility policy. Everything user-facing
+    /// (Spotlight diff, menu, entity queries, project suggestions) goes through
+    /// here; the scan cache itself keeps every record.
+    private func isVisible(_ record: SessionRecord) -> Bool {
+        hiddenSessions.allowsVisibility(of: record.id)
+    }
+
     func record(id: String) -> SessionRecord? {
-        guard hiddenSessions.allowsVisibility(of: id) else { return nil }
-        return records[id]
+        guard let record = records[id], isVisible(record) else { return nil }
+        return record
     }
 
     /// Deterministically select the newest record for one agent and optional
@@ -446,7 +442,7 @@ actor SessionStore {
     }
 
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
-        var result = records.values.filter { hiddenSessions.allowsVisibility(of: $0.id) }
+        var result = records.values.filter(isVisible)
         if let query {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let needle = trimmed.lowercased()
@@ -467,7 +463,7 @@ actor SessionStore {
 
     func distinctProjects() -> [ProjectInfo] {
         var byCwd: [String: Date] = [:]
-        for record in records.values where hiddenSessions.allowsVisibility(of: record.id) {
+        for record in records.values where isVisible(record) {
             byCwd[record.cwd] = max(byCwd[record.cwd] ?? .distantPast, record.lastActivityAt)
         }
         return byCwd
@@ -498,7 +494,7 @@ actor SessionStore {
 
     func hideSession(id: String) throws -> Bool {
         if hiddenSessions.contains(id) { return false }
-        guard let record = records[id] else { throw SessionStoreError.sessionNotFound(id) }
+        guard let record = records[id] else { throw SpotionError.sessionNotFound(id) }
         let snapshot = HiddenSessionSnapshot(
             id: id,
             agent: record.agent,
@@ -518,7 +514,7 @@ actor SessionStore {
     func restoreSession(id: String) throws -> Bool {
         guard hiddenSessions.contains(id) else { return false }
         guard records[id] != nil else {
-            throw SessionStoreError.hiddenSessionSourceUnavailable(id)
+            throw SpotionError.hiddenSessionSourceUnavailable(id)
         }
 
         // Make the Spotlight re-donation obligation durable before clearing
@@ -545,8 +541,9 @@ actor SessionStore {
         hiddenSessions.snapshots()
     }
 
-    var hiddenStateMessage: String? {
-        hiddenStateRuntimeError ?? hiddenSessions.statusMessage
+    /// Non-fatal state problems worth showing in Settings.
+    func warnings() -> [String] {
+        [hiddenStateRuntimeError ?? hiddenSessions.statusMessage].compactMap { $0 }
     }
 
     func scanReport() -> String {
