@@ -52,7 +52,8 @@ final class AppCoordinator {
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
             hiddenSessionsURL: appSupport.appendingPathComponent("hidden-sessions-v1.json"),
             codexScanner: CodexScanner(),
-            claudeScanner: ClaudeScanner()
+            claudeScanner: ClaudeScanner(),
+            historyWindow: SpotionSettings.spotlightHistoryWindow
         )
     }
 
@@ -249,7 +250,9 @@ final class AppCoordinator {
         let diff = await store.refresh(
             enabledAgents: enabled,
             iconSources: iconSources,
-            includeLaterPrompts: SpotionSettings.searchLaterPrompts
+            includeLaterPrompts: SpotionSettings.searchLaterPrompts,
+            historyWindow: SpotionSettings.spotlightHistoryWindow,
+            now: started
         )
         do {
             if !diff.upserts.isEmpty {

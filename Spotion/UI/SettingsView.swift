@@ -169,12 +169,25 @@ private struct AdvancedSettingsTab: View {
 private struct IndexSettingsTab: View {
     private var state = AppCoordinator.shared.uiState
     @State private var searchLaterPrompts = SpotionSettings.searchLaterPrompts
+    @State private var historyWindow = SpotionSettings.spotlightHistoryWindow
     @State private var checkTerm = ""
     @State private var checkResult: String?
 
     var body: some View {
         Form {
             Section("Search") {
+                Picker("Spotlight history window", selection: $historyWindow) {
+                    ForEach(SpotlightHistoryWindow.allCases, id: \.rawValue) { window in
+                        Text(window.displayName).tag(window)
+                    }
+                }
+                .onChange(of: historyWindow) {
+                    SpotionSettings.spotlightHistoryWindow = historyWindow
+                    Task { await AppCoordinator.shared.refreshAndApply() }
+                }
+                Text("Limits Spotion visibility only. Codex and Claude history, archives, and source files are never deleted or changed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("Search later prompts", isOn: $searchLaterPrompts)
                     .onChange(of: searchLaterPrompts) {
                         SpotionSettings.searchLaterPrompts = searchLaterPrompts

@@ -41,6 +41,15 @@ actor SessionStore {
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
     private var records: [String: SessionRecord] = [:]
+    /// Query visibility is updated from the same frozen clock value used to
+    /// derive the durable Spotlight diff for the current refresh.
+    private var historyWindow: SpotlightHistoryWindow
+    private var historyReferenceDate: Date
+    /// Indexed records whose root could not be enumerated on the last refresh:
+    /// they may be stale, so they stay in Spotlight (and therefore openable)
+    /// until a trustworthy pass confirms they fell outside the window. The
+    /// only refresh-derived visibility state; empty in steady state.
+    private var protectedIDs = Set<String>()
     private(set) var lastStats = StoreStats()
     /// A cache file exists on disk but is unusable (version mismatch / decode
     /// failure): the old indexedIDs are gone, so sessions deleted before the
@@ -52,7 +61,9 @@ actor SessionStore {
         cacheURL: URL,
         hiddenSessionsURL: URL? = nil,
         codexScanner: CodexScanner?,
-        claudeScanner: ClaudeScanner?
+        claudeScanner: ClaudeScanner?,
+        historyWindow: SpotlightHistoryWindow = .all,
+        now: Date = Date()
     ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
@@ -60,6 +71,8 @@ actor SessionStore {
         hiddenSessions = HiddenSessionStore(
             url: hiddenSessionsURL
                 ?? cacheURL.deletingLastPathComponent().appendingPathComponent("hidden-sessions-v1.json"))
+        self.historyWindow = historyWindow
+        historyReferenceDate = now
     }
 
     // MARK: - Lifecycle
@@ -115,8 +128,12 @@ actor SessionStore {
     func refresh(
         enabledAgents: Set<AgentKind>,
         iconSources: [AgentKind: String] = [:],
-        includeLaterPrompts: Bool = false
+        includeLaterPrompts: Bool = false,
+        historyWindow: SpotlightHistoryWindow = .all,
+        now: Date = Date()
     ) async -> SessionDiff {
+        self.historyWindow = historyWindow
+        historyReferenceDate = now
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
         var hydratedPromptPaths = Set<String>()
@@ -320,12 +337,28 @@ actor SessionStore {
             }
         }
 
-        let visibleIDs = Set(records.values.filter(isVisible).map(\.id))
+        // If an enabled root could not be enumerated, its cached activity time
+        // may be stale. Keep already-indexed items in Spotlight until a
+        // trustworthy pass can confirm they are genuinely outside the window.
+        // Hidden state still wins: privacy beats drift protection.
+        let untrustworthyRootPaths = roots
+            .filter { $0.enabled && !$0.trustworthy }
+            .map(\.path)
+        protectedIDs = Set(records.values.lazy.filter { record in
+            self.cache.indexedIDs.contains(record.id)
+                && self.isPolicyAllowed(record)
+                && untrustworthyRootPaths.contains { record.filePath.hasPrefix($0 + "/") }
+        }.map(\.id))
+        let eligibleIDs = Set(records.values.filter(isEligible).map(\.id))
+        let visibleIDs = eligibleIDs.union(protectedIDs)
         // Changed ids enter the dirty set and stay until markIndexed (donation
         // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
         cache.dirtyIDs.formIntersection(visibleIDs)
-        let upsertIDs = cache.dirtyIDs.union(visibleIDs.subtracting(cache.indexedIDs))
+        // Protected-but-ineligible ids stay dirty for a later trustworthy pass
+        // but are never re-donated while ineligible.
+        let upsertIDs = cache.dirtyIDs.union(eligibleIDs.subtracting(cache.indexedIDs))
+            .intersection(eligibleIDs)
         let promptHydrationBlockedIDs = includeLaterPrompts ? Set(upsertIDs.filter {
             guard let path = records[$0]?.filePath else { return false }
             return cache.laterPromptPendingPaths.contains(path)
@@ -339,18 +372,18 @@ actor SessionStore {
             codexCount: records.values.count(where: { $0.agent == .codex }),
             claudeCount: records.values.count(where: { $0.agent == .claude }),
             parseFailures: cache.entries.values.count(where: { $0.record == nil }),
-            visibleCount: visibleIDs.count,
+            visibleCount: eligibleIDs.count,
             totalCount: records.count,
-            lastRefresh: Date()
+            lastRefresh: now
         )
         persist()
         return diff
     }
 
     /// Called when the system (Core Spotlight delegate) requests specific ids:
-    /// known ids are forced into the dirty set so the next refresh must upsert
-    /// them; returns the ids that no longer exist locally (the caller should
-    /// delete those from the index directly).
+    /// visible ids are forced into the dirty set so the next refresh re-donates
+    /// them; missing, hidden, or policy-ineligible ids are returned so the caller
+    /// can durably delete any stale Spotlight item directly.
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
@@ -413,7 +446,20 @@ actor SessionStore {
     /// (Spotlight diff, menu, entity queries, project suggestions) goes through
     /// here; the scan cache itself keeps every record.
     private func isVisible(_ record: SessionRecord) -> Bool {
+        isEligible(record) || (isPolicyAllowed(record) && protectedIDs.contains(record.id))
+    }
+
+    /// Spotion-only user policies (hidden…). Fail-closed stores answer false
+    /// for everything while unreadable.
+    private func isPolicyAllowed(_ record: SessionRecord) -> Bool {
         hiddenSessions.allowsVisibility(of: record.id)
+    }
+
+    /// Policy-allowed and inside the history window as of the last refresh's
+    /// frozen clock (so queries and the Spotlight diff agree).
+    private func isEligible(_ record: SessionRecord) -> Bool {
+        isPolicyAllowed(record)
+            && historyWindow.contains(lastActivityAt: record.lastActivityAt, now: historyReferenceDate)
     }
 
     func record(id: String) -> SessionRecord? {
@@ -426,7 +472,7 @@ actor SessionStore {
     /// standardization; it never falls back to similarly named directories.
     func latest(agent: AgentKind, projectCWD: String?) -> SessionRecord? {
         let normalizedProject = projectCWD.map(Self.normalizedProjectPath)
-        return records.values
+        return records.values.filter(isVisible)
             .filter { record in
                 guard record.agent == agent else { return false }
                 guard let normalizedProject else { return true }

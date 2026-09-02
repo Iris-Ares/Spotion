@@ -51,6 +51,10 @@ will get a dated section here that doubles as its release notes.
   it from Settings → Index → Hidden sessions. Hide state lives in its own
   sidecar file (with a recovery copy) and fails closed if unreadable
   ([#26](https://github.com/Iris-Ares/Spotion/pull/26)).
+- Settings → Index → *Spotlight history window* (All history / 7 / 30 / 90 days):
+  keep only recently active sessions in Spotlight while every session stays in
+  the scan cache and on disk; Settings shows the visible / total count
+  ([#35](https://github.com/Iris-Ares/Spotion/pull/35)).
 
 ### Fixed
 
