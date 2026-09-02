@@ -27,8 +27,6 @@ final class UIState {
     var hiddenSessions: [HiddenSessionSnapshot] = []
     var excludedProjects: [ProjectExclusion] = []
     var availableProjects: [ProjectInfo] = []
-    var archivedCodexCount = 0
-    var archiveConflicts = 0
 }
 
 /// Wires up store / indexer / watcher; the single entry point for App Intents
