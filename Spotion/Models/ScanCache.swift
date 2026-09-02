@@ -41,3 +41,12 @@ struct ScanCache: Codable, Sendable {
     /// read or root enumeration leaves the path here for a later retry.
     var laterPromptPendingPaths: Set<String> = []
 }
+
+enum DonatedContentGeneration {
+    /// v4 adds raw and agent-prefixed session IDs to donated keywords.
+    static let current = 4
+
+    static func requiresFullRebuild(stored: Int) -> Bool {
+        stored < current
+    }
+}

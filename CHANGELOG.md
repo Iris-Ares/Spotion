@@ -36,6 +36,9 @@ will get a dated section here that doubles as its release notes.
   [Iris-Ares/homebrew-tap](https://github.com/Iris-Ares/homebrew-tap) repository;
   the release workflow bumps the cask automatically on every tag
   ([#16](https://github.com/Iris-Ares/Spotion/pull/16)).
+- Find a session by pasting its exact session ID into Spotlight; `codex:<id>` /
+  `claude:<id>` narrow the match to one agent
+  ([#52](https://github.com/Iris-Ares/Spotion/pull/52)).
 
 ### Fixed
 

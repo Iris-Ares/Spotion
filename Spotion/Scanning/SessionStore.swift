@@ -370,12 +370,17 @@ actor SessionStore {
 
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
         var result = Array(records.values)
-        if let query, !query.trimmingCharacters(in: .whitespaces).isEmpty {
-            let needle = query.lowercased()
-            result = result.filter {
-                displayTitle(for: $0).lowercased().contains(needle)
-                    || $0.projectName.lowercased().contains(needle)
-                    || $0.cwd.lowercased().contains(needle)
+        if let query {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let needle = trimmed.lowercased()
+            if !needle.isEmpty {
+                result = result.filter {
+                    displayTitle(for: $0).lowercased().contains(needle)
+                        || $0.projectName.lowercased().contains(needle)
+                        || $0.cwd.lowercased().contains(needle)
+                        || $0.sessionID.lowercased() == needle
+                        || $0.id.lowercased() == needle
+                }
             }
         }
         result.sort { $0.lastActivityAt > $1.lastActivityAt }

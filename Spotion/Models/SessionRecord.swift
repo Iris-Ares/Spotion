@@ -96,6 +96,34 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         "\(agent.rawValue):\(sessionID)"
     }
 
+    func spotlightKeywords() -> [String] {
+        Self.spotlightKeywords(
+            projectName: projectName,
+            agent: agent,
+            sessionID: sessionID,
+            id: id,
+            gitBranch: gitBranch,
+            cwd: cwd
+        )
+    }
+
+    static func spotlightKeywords(
+        projectName: String,
+        agent: AgentKind,
+        sessionID: String,
+        id: String,
+        gitBranch: String?,
+        cwd: String
+    ) -> [String] {
+        var candidates = [projectName, agent.displayName, agent.rawValue, "session"]
+        if let gitBranch { candidates.append(gitBranch) }
+        candidates += cwd.split(separator: "/").map(String.init)
+        candidates += [sessionID, id]
+
+        var seen = Set<String>()
+        return candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
     func spotlightContentDescription(includeLaterPrompts: Bool) -> String {
         Self.spotlightContentDescription(
             firstPrompt: firstPrompt,
