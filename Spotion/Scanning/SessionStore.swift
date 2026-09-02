@@ -27,6 +27,18 @@ struct ProjectInfo: Sendable, Hashable {
 struct TitledSession: Sendable, Hashable {
     var record: SessionRecord
     var title: String
+    var isPinned = false
+}
+
+struct SessionMenuSections: Sendable, Equatable {
+    var pinned: [TitledSession]
+    var recent: [TitledSession]
+}
+
+enum PinUpdateResult: Sendable, Equatable {
+    case changed
+    case unchanged
+    case unknownSession
 }
 
 /// Single owner of all session state: mtime+size incremental scanning,
@@ -38,6 +50,7 @@ actor SessionStore {
     private var hiddenSessions: HiddenSessionStore
     private var hiddenStateRuntimeError: String?
     private var projectExclusions: ProjectExclusionStore
+    private var pinnedStore: PinnedSessionStore
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -65,7 +78,8 @@ actor SessionStore {
         codexScanner: CodexScanner?,
         claudeScanner: ClaudeScanner?,
         historyWindow: SpotlightHistoryWindow = .all,
-        now: Date = Date()
+        now: Date = Date(),
+        pinnedSessionsURL: URL? = nil
     ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
@@ -76,6 +90,9 @@ actor SessionStore {
         projectExclusions = ProjectExclusionStore(
             url: projectExclusionsURL
                 ?? cacheURL.deletingLastPathComponent().appendingPathComponent("project-exclusions-v1.json"))
+        pinnedStore = PinnedSessionStore(
+            url: pinnedSessionsURL
+                ?? cacheURL.deletingLastPathComponent().appendingPathComponent("pinned-sessions-v1.json"))
         self.historyWindow = historyWindow
         historyReferenceDate = now
     }
@@ -85,6 +102,7 @@ actor SessionStore {
     func bootstrap() {
         hiddenSessions.load()
         projectExclusions.load()
+        pinnedStore.bootstrap()
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
@@ -95,6 +113,13 @@ actor SessionStore {
         }
         cache = loaded
         rebuildRecords()
+        if pinnedStore.recoveredFromCorruption {
+            // Spotlight may still retain the higher priority donated from the
+            // unreadable payload. Re-donate cached records at standard priority
+            // so the index matches the safe empty-pin fallback.
+            cache.dirtyIDs.formUnion(records.keys)
+            persist()
+        }
     }
 
     /// Read and clear the full-rebuild flag (consumed once by the coordinator
@@ -332,6 +357,18 @@ actor SessionStore {
             }
         }
 
+        // Pins are independent from the scan cache, but only current sessions
+        // may remain pinned. Prune only from a complete snapshot (every enabled
+        // root enumerated); disabled roots count as trustworthy so their pins
+        // go away together with their sessions.
+        if roots.allSatisfy({ !$0.enabled || $0.trustworthy }) {
+            do {
+                try pinnedStore.prune(validIDs: Set(records.keys))
+            } catch {
+                NSLog("Spotion: pinned session prune failed: %@", error.localizedDescription)
+            }
+        }
+
         // A deleted/corrupted winning rollout may reveal an unchanged fallback
         // record that was decoded without private prompt text. Defer that
         // upsert one cycle and queue its winning path for bounded hydration.
@@ -464,9 +501,12 @@ actor SessionStore {
 
     /// Policy-allowed and inside the history window as of the last refresh's
     /// frozen clock (so queries and the Spotlight diff agree).
+    /// Pinned sessions are exempt from the window — a pin means "keep this
+    /// retrievable" — but never from the privacy policies above.
     private func isEligible(_ record: SessionRecord) -> Bool {
-        isPolicyAllowed(record)
-            && historyWindow.contains(lastActivityAt: record.lastActivityAt, now: historyReferenceDate)
+        guard isPolicyAllowed(record) else { return false }
+        return pinnedStore.contains(record.id)
+            || historyWindow.contains(lastActivityAt: record.lastActivityAt, now: historyReferenceDate)
     }
 
     func record(id: String) -> SessionRecord? {
@@ -536,11 +576,59 @@ actor SessionStore {
     }
 
     func titled(records: [SessionRecord]) -> [TitledSession] {
-        records.map { TitledSession(record: $0, title: displayTitle(for: $0)) }
+        records.map {
+            TitledSession(record: $0, title: displayTitle(for: $0), isPinned: pinnedStore.contains($0.id))
+        }
     }
 
     func allTitled(limit: Int? = nil, matching query: String? = nil) -> [TitledSession] {
         titled(records: all(limit: limit, matching: query))
+    }
+
+    // MARK: - Pins
+
+    func setPinned(id: String, pinned: Bool) throws -> PinUpdateResult {
+        guard records[id] != nil else { return .unknownSession }
+        guard pinnedStore.contains(id) != pinned else { return .unchanged }
+
+        // Persist the re-donation obligation before committing the independent
+        // pin file. If the process exits between these writes, the next launch
+        // still reconciles Spotlight with whichever pin state reached disk.
+        let wasDirty = cache.dirtyIDs.contains(id)
+        cache.dirtyIDs.insert(id)
+        do {
+            try persistCache()
+        } catch {
+            if !wasDirty { cache.dirtyIDs.remove(id) }
+            throw error
+        }
+
+        // A failed pin write may leave one harmless extra re-donation queued;
+        // it must not erase the already-durable retry obligation.
+        _ = try pinnedStore.setPinned(pinned, id: id)
+        return .changed
+    }
+
+    func pinnedSessionIDs() -> Set<String> {
+        pinnedStore.sessionIDs
+    }
+
+    /// Pinned rows use stable title order (with id as a deterministic tie
+    /// breaker); recent rows keep activity order and exclude pinned ids.
+    func menuSections(recentLimit: Int) -> SessionMenuSections {
+        let allRecords = all()
+        let pinned = titled(records: allRecords.filter { pinnedStore.contains($0.id) })
+            .sorted {
+                let left = $0.title.lowercased()
+                let right = $1.title.lowercased()
+                return left == right ? $0.record.id < $1.record.id : left < right
+            }
+        let recentRecords = allRecords
+            .filter { !pinnedStore.contains($0.id) }
+            .prefix(recentLimit)
+        return SessionMenuSections(
+            pinned: pinned,
+            recent: titled(records: Array(recentRecords)))
     }
 
     // MARK: - Spotion-only hidden sessions

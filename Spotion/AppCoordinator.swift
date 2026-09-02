@@ -12,6 +12,7 @@ final class UIState {
     var lastIndexed: Date?
     var lastError: String?
     var isScanning = false
+    var pinned: [TitledSession] = []
     var recent: [TitledSession] = []
     /// Sessions eligible for Spotlight vs. everything scanned (hidden and
     /// otherwise filtered records stay in the cache but not in the index).
@@ -56,7 +57,8 @@ final class AppCoordinator {
             projectExclusionsURL: appSupport.appendingPathComponent("project-exclusions-v1.json"),
             codexScanner: CodexScanner(),
             claudeScanner: ClaudeScanner(),
-            historyWindow: SpotionSettings.spotlightHistoryWindow
+            historyWindow: SpotionSettings.spotlightHistoryWindow,
+            pinnedSessionsURL: appSupport.appendingPathComponent("pinned-sessions-v1.json")
         )
     }
 
@@ -295,7 +297,9 @@ final class AppCoordinator {
         uiState.totalCount = stats.totalCount
         uiState.warnings = await store.warnings()
         uiState.lastIndexed = Date()
-        uiState.recent = await store.allTitled(limit: 5)
+        let menu = await store.menuSections(recentLimit: 5)
+        uiState.pinned = menu.pinned
+        uiState.recent = menu.recent
         uiState.hiddenSessions = await store.hiddenSessionSnapshots()
         uiState.excludedProjects = await store.projectExclusionList()
         uiState.availableProjects = await store.distinctProjects()
@@ -381,6 +385,32 @@ final class AppCoordinator {
             guard try await self.store.removeProjectExclusion(path: path) else { return }
             guard await self.performRefreshAndApply() else {
                 throw SpotionError.indexMutationPending("项目恢复规则")
+            }
+        }
+    }
+
+    // MARK: - Pins
+
+    func pinSession(id: String) async throws {
+        try await updatePin(id: id, pinned: true)
+    }
+
+    func unpinSession(id: String) async throws {
+        try await updatePin(id: id, pinned: false)
+    }
+
+    private func updatePin(id: String, pinned: Bool) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            switch try await self.store.setPinned(id: id, pinned: pinned) {
+            case .unknownSession:
+                throw SpotionError.sessionNotFound(id)
+            case .unchanged:
+                return
+            case .changed:
+                guard await self.performRefreshAndApply() else {
+                    throw SpotionError.indexMutationPending("置顶状态")
+                }
             }
         }
     }
