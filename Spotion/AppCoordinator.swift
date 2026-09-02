@@ -8,7 +8,6 @@ import Observation
 final class UIState {
     var codexCount = 0
     var claudeCount = 0
-    var totalCount = 0
     var parseFailures = 0
     var lastIndexed: Date?
     var lastError: String?
@@ -288,7 +287,6 @@ final class AppCoordinator {
         let stats = await store.lastStats
         uiState.codexCount = stats.codexCount
         uiState.claudeCount = stats.claudeCount
-        uiState.totalCount = stats.totalCount
         uiState.parseFailures = stats.parseFailures
         uiState.visibleCount = stats.visibleCount
         uiState.totalCount = stats.totalCount
