@@ -43,6 +43,9 @@ will get a dated section here that doubles as its release notes.
   actions: resume the newest session of one agent, optionally scoped to a project,
   chosen from Spotion's own index rather than the CLI's implicit `--last`
   ([#50](https://github.com/Iris-Ares/Spotion/pull/50)).
+- Codex sessions are now searchable by their git branch (parsed from the rollout's
+  `session_meta.payload.git.branch`); the scan cache advances to v7 so existing
+  sessions are reparsed once ([#17](https://github.com/Iris-Ares/Spotion/pull/17)).
 
 ### Fixed
 
