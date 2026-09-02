@@ -15,13 +15,22 @@ final class TerminalLauncher: Sendable {
         var errorDescription: String? { message }
     }
 
-    private let resolver = AgentBinaryResolver()
+    private let resolver: AgentBinaryResolver
+
+    init(resolver: AgentBinaryResolver = AgentBinaryResolver()) {
+        self.resolver = resolver
+    }
 
     func resume(_ record: SessionRecord) async throws {
+        try await launch(shellCommand: try resumeCommand(for: record))
+    }
+
+    /// The exact command `resume` runs; also what *Copy Session Resume Command*
+    /// hands to the clipboard, so the two cannot drift.
+    func resumeCommand(for record: SessionRecord) throws -> String {
         let binary = try resolver.resolve(record.agent)
-        let command = try SessionLaunchCommand.resume(
+        return try SessionLaunchCommand.resume(
             record, binary: binary, existingDirectory: existingDirectory(record.cwd))
-        try await launch(shellCommand: command)
     }
 
     /// Fork is deliberately terminal-only: neither supported native-app deep

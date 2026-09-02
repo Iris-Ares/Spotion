@@ -453,6 +453,16 @@ final class AppCoordinator {
         }
     }
 
+    /// Copy the exact resume command without launching anything.
+    func copySessionResumeCommand(id: String) async throws -> (agent: AgentKind, projectName: String) {
+        await ensureReady()
+        guard let record = await store.record(id: id) else {
+            throw SpotionError.sessionNotFound(id)
+        }
+        try ResumeCommandCopier().copy(record, to: SystemPlainTextClipboard.shared)
+        return (record.agent, record.projectName)
+    }
+
     // MARK: - Opening sessions
 
     @discardableResult

@@ -45,8 +45,11 @@ targets:
       - SpotionTests
       - Spotion/Models
       - Spotion/Scanning
+      - Spotion/Launch/AgentBinaryResolver.swift
+      - Spotion/Launch/ResumeCommandCopier.swift
       - Spotion/Launch/SessionLaunchCommand.swift
       - Spotion/Launch/ShellQuoting.swift
+      - Spotion/Launch/TerminalLauncher.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ares.SpotionTests
