@@ -46,6 +46,7 @@ targets:
       - Spotion/Models
       - Spotion/Scanning
       - Spotion/Launch/AgentBinaryResolver.swift
+      - Spotion/Launch/ClaudePullRequestResumePlan.swift
       - Spotion/Launch/ResumeCommandCopier.swift
       - Spotion/Launch/SessionLaunchCommand.swift
       - Spotion/Launch/ShellQuoting.swift

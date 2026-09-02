@@ -90,6 +90,11 @@ will get a dated section here that doubles as its release notes.
   executable or required directory is missing. The binary resolver now also
   checks the process PATH before its login-shell fallback
   ([#30](https://github.com/Iris-Ares/Spotion/pull/30)).
+- *Resume Claude Session from Pull Request* Spotlight action: pick a project and
+  enter `123`, `#123`, or a canonical GitHub PR URL; Spotion validates the input
+  and runs `claude --from-pr <n>` in that directory and your terminal, leaving
+  the linked-session lookup to Claude Code
+  ([#53](https://github.com/Iris-Ares/Spotion/pull/53)).
 
 ### Fixed
 
