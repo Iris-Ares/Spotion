@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Translates "resume a session / start a new session" into one shell command
+/// Translates "resume / fork / start a session" into one shell command
 /// and launches it in a terminal.
 /// Terminal.app: NSAppleScript `do script` (default; triggers the Automation
 /// consent prompt on first use).
@@ -19,24 +19,17 @@ final class TerminalLauncher: Sendable {
 
     func resume(_ record: SessionRecord) async throws {
         let binary = try resolver.resolve(record.agent)
-        let command: String
-        switch record.agent {
-        case .codex:
-            if let cwd = existingDirectory(record.cwd) {
-                // Official docs: --cd takes precedence over the saved session dir
-                command = "cd \(q(cwd)) && exec \(q(binary)) --cd \(q(cwd)) resume \(q(record.sessionID))"
-            } else {
-                // Original directory is gone: defer to codex's own saved-dir logic
-                command = "exec \(q(binary)) resume \(q(record.sessionID))"
-            }
-        case .claude:
-            // claude --resume has no cwd flag and session lookup is scoped to
-            // the process cwd → the cd is mandatory
-            guard let cwd = existingDirectory(record.cwd) else {
-                throw LaunchError(message: "会话目录已不存在：\(record.cwd)（claude --resume 必须在原目录运行）")
-            }
-            command = "cd \(q(cwd)) && exec \(q(binary)) --resume \(q(record.sessionID))"
-        }
+        let command = try SessionLaunchCommand.resume(
+            record, binary: binary, existingDirectory: existingDirectory(record.cwd))
+        try await launch(shellCommand: command)
+    }
+
+    /// Fork is deliberately terminal-only: neither supported native-app deep
+    /// link exposes an explicit, source-preserving fork contract.
+    func fork(_ record: SessionRecord) async throws {
+        let binary = try resolver.resolve(record.agent)
+        let command = try SessionLaunchCommand.fork(
+            record, binary: binary, existingDirectory: existingDirectory(record.cwd))
         try await launch(shellCommand: command)
     }
 

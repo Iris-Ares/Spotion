@@ -80,6 +80,10 @@ will get a dated section here that doubles as its release notes.
   never written to the scan cache); shell commands, patches, prose, and tool
   output are ignored. The scan cache advances to v8
   ([#38](https://github.com/Iris-Ares/Spotion/pull/38)).
+- *Fork Agent Session* Spotlight action: branch a new interactive session off an
+  indexed one (`codex fork <id>` / `claude --resume=<id> --fork-session`) in the
+  configured terminal, leaving the source session untouched
+  ([#49](https://github.com/Iris-Ares/Spotion/pull/49)).
 
 ### Fixed
 
