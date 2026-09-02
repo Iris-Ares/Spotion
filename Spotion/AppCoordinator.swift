@@ -13,23 +13,14 @@ final class UIState {
     var lastError: String?
     var isScanning = false
     var recent: [TitledSession] = []
-}
-
-enum SpotionError: LocalizedError {
-    case sessionNotFound(String)
-    case noMatchingSession(agent: AgentKind, projectCWD: String?)
-
-    var errorDescription: String? {
-        switch self {
-        case .sessionNotFound(let id): "会话已不存在：\(id)"
-        case .noMatchingSession(let agent, let projectCWD):
-            if let projectCWD {
-                "未找到 \(agent.displayName) 在 \((projectCWD as NSString).lastPathComponent) 中的会话。"
-            } else {
-                "未找到可继续的 \(agent.displayName) 会话。"
-            }
-        }
-    }
+    /// Sessions eligible for Spotlight vs. everything scanned (hidden and
+    /// otherwise filtered records stay in the cache but not in the index).
+    var visibleCount = 0
+    var totalCount = 0
+    /// Non-fatal state problems (recovered sidecar files etc.), refreshed
+    /// every cycle; `lastError` is reserved for the apply failure itself.
+    var warnings: [String] = []
+    var hiddenSessions: [HiddenSessionSnapshot] = []
 }
 
 /// Wires up store / indexer / watcher; the single entry point for App Intents
@@ -59,6 +50,7 @@ final class AppCoordinator {
             .appendingPathComponent("Spotion", isDirectory: true)
         store = SessionStore(
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
+            hiddenSessionsURL: appSupport.appendingPathComponent("hidden-sessions-v1.json"),
             codexScanner: CodexScanner(),
             claudeScanner: ClaudeScanner()
         )
@@ -224,6 +216,18 @@ final class AppCoordinator {
         return await task.value
     }
 
+    private func enqueueThrowing<T: Sendable>(
+        _ work: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let previous = pipeline
+        let task = Task { @MainActor () throws -> T in
+            await previous?.value
+            return try await work()
+        }
+        pipeline = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
     /// Returns whether the donate/delete apply completed without error (the
     /// scan itself is infallible; a false return means the diff was left for
     /// the dirty/indexed retry mechanics).
@@ -281,8 +285,12 @@ final class AppCoordinator {
         uiState.codexCount = stats.codexCount
         uiState.claudeCount = stats.claudeCount
         uiState.parseFailures = stats.parseFailures
+        uiState.visibleCount = stats.visibleCount
+        uiState.totalCount = stats.totalCount
+        uiState.warnings = await store.warnings()
         uiState.lastIndexed = Date()
         uiState.recent = await store.allTitled(limit: 5)
+        uiState.hiddenSessions = await store.hiddenSessionSnapshots()
         if !diff.isEmpty {
             NSLog(
                 "Spotion refresh: codex=%d claude=%d failures=%d upserts=%d deletes=%d in %.1fs",
@@ -322,6 +330,28 @@ final class AppCoordinator {
                 try? await self.indexer.deleteDomain("spotion.\(agent.rawValue)")
             }
             await self.performRefreshAndApply()
+        }
+    }
+
+    // MARK: - Spotion-only hidden sessions
+
+    func hideSession(id: String) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            guard try await self.store.hideSession(id: id) else { return }
+            guard await self.performRefreshAndApply() else {
+                throw SpotionError.indexMutationPending("隐藏状态")
+            }
+        }
+    }
+
+    func restoreSession(id: String) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            guard try await self.store.restoreSession(id: id) else { return }
+            guard await self.performRefreshAndApply() else {
+                throw SpotionError.indexMutationPending("恢复状态")
+            }
         }
     }
 

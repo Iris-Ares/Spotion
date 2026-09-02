@@ -10,6 +10,9 @@ struct StoreStats: Sendable {
     var codexCount = 0
     var claudeCount = 0
     var parseFailures = 0
+    /// Records eligible for Spotlight after Spotion-only policies (hidden…).
+    var visibleCount = 0
+    var totalCount = 0
     var lastRefresh: Date?
 }
 
@@ -32,6 +35,8 @@ actor SessionStore {
     private let cacheURL: URL
     private let codexScanner: CodexScanner?
     private let claudeScanner: ClaudeScanner?
+    private var hiddenSessions: HiddenSessionStore
+    private var hiddenStateRuntimeError: String?
 
     private var cache = ScanCache()
     /// id → record, rebuilt from cache.entries
@@ -43,15 +48,24 @@ actor SessionStore {
     /// is required.
     private var pendingFullRebuild = false
 
-    init(cacheURL: URL, codexScanner: CodexScanner?, claudeScanner: ClaudeScanner?) {
+    init(
+        cacheURL: URL,
+        hiddenSessionsURL: URL? = nil,
+        codexScanner: CodexScanner?,
+        claudeScanner: ClaudeScanner?
+    ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
         self.claudeScanner = claudeScanner
+        hiddenSessions = HiddenSessionStore(
+            url: hiddenSessionsURL
+                ?? cacheURL.deletingLastPathComponent().appendingPathComponent("hidden-sessions-v1.json"))
     }
 
     // MARK: - Lifecycle
 
     func bootstrap() {
+        hiddenSessions.load()
         let fileExists = FileManager.default.fileExists(atPath: cacheURL.path)
         guard let data = try? Data(contentsOf: cacheURL),
               let loaded = try? JSONDecoder().decode(ScanCache.self, from: data),
@@ -168,6 +182,7 @@ actor SessionStore {
         }
 
         struct RootState {
+            var agent: AgentKind
             var path: String
             var trustworthy: Bool  // enumeration result is reliable (not a suspected transient failure)
             var enabled: Bool
@@ -187,16 +202,16 @@ actor SessionStore {
             let rootPath = (try? URL(fileURLWithPath: scanner.rootPath)
                 .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath) ?? scanner.rootPath
             guard enabledAgents.contains(scanner.agent) else {
-                roots.append(RootState(path: rootPath, trustworthy: true, enabled: false))
+                roots.append(RootState(agent: scanner.agent, path: rootPath, trustworthy: true, enabled: false))
                 continue
             }
             // nil = enumeration failed (permission blip etc.) → no deletions for
             // this root this cycle; [] = genuinely empty root, deletions proceed.
             guard let files = scanner.enumerateFiles() else {
-                roots.append(RootState(path: rootPath, trustworthy: false, enabled: true))
+                roots.append(RootState(agent: scanner.agent, path: rootPath, trustworthy: false, enabled: true))
                 continue
             }
-            roots.append(RootState(path: rootPath, trustworthy: true, enabled: true))
+            roots.append(RootState(agent: scanner.agent, path: rootPath, trustworthy: true, enabled: true))
 
             for file in files {
                 seenPaths.insert(file.path)
@@ -272,6 +287,28 @@ actor SessionStore {
         // multiple files sharing a session_id, and deletion fallback).
         rebuildRecords()
 
+        let currentIDs = Set(records.keys)
+        let trustworthyAgents = Set(roots.filter { $0.enabled && $0.trustworthy }.map(\.agent))
+        if hiddenSessions.isAvailable {
+            // A transcript path that was enumerated but could not currently be
+            // parsed is not evidence that the source disappeared. Preserve its
+            // hide entry so a cache reset plus transient/unusable file cannot
+            // expose the session when parsing later recovers.
+            let observedHiddenIDs = hiddenSessions.snapshots().filter {
+                seenPaths.contains($0.filePath)
+            }.map(\.id)
+            do {
+                _ = try hiddenSessions.pruneMissing(
+                    validIDs: currentIDs.union(observedHiddenIDs),
+                    trustworthyAgents: trustworthyAgents)
+                hiddenStateRuntimeError = nil
+            } catch {
+                // Retaining stale hidden entries is privacy-safe. Surface the
+                // persistence problem rather than silently exposing anything.
+                hiddenStateRuntimeError = error.localizedDescription
+            }
+        }
+
         // A deleted/corrupted winning rollout may reveal an unchanged fallback
         // record that was decoded without private prompt text. Defer that
         // upsert one cycle and queue its winning path for bounded hydration.
@@ -283,25 +320,27 @@ actor SessionStore {
             }
         }
 
-        let currentIDs = Set(records.keys)
+        let visibleIDs = Set(records.values.filter(isVisible).map(\.id))
         // Changed ids enter the dirty set and stay until markIndexed (donation
         // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
-        cache.dirtyIDs.formIntersection(currentIDs)
-        let upsertIDs = cache.dirtyIDs.union(currentIDs.subtracting(cache.indexedIDs))
+        cache.dirtyIDs.formIntersection(visibleIDs)
+        let upsertIDs = cache.dirtyIDs.union(visibleIDs.subtracting(cache.indexedIDs))
         let promptHydrationBlockedIDs = includeLaterPrompts ? Set(upsertIDs.filter {
             guard let path = records[$0]?.filePath else { return false }
             return cache.laterPromptPendingPaths.contains(path)
         }) : []
         let diff = SessionDiff(
             upserts: upsertIDs.subtracting(promptHydrationBlockedIDs).compactMap { records[$0] },
-            deletedIDs: Array(cache.indexedIDs.subtracting(currentIDs))
+            deletedIDs: Array(cache.indexedIDs.subtracting(visibleIDs))
         )
 
         lastStats = StoreStats(
             codexCount: records.values.count(where: { $0.agent == .codex }),
             claudeCount: records.values.count(where: { $0.agent == .claude }),
             parseFailures: cache.entries.values.count(where: { $0.record == nil }),
+            visibleCount: visibleIDs.count,
+            totalCount: records.count,
             lastRefresh: Date()
         )
         persist()
@@ -315,9 +354,13 @@ actor SessionStore {
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
-            if records[id] != nil {
+            if let record = records[id], isVisible(record) {
                 cache.dirtyIDs.insert(id)
             } else {
+                // A system reindex request for a hidden id means an item is
+                // still present (or was resurrected by a late mutation). Treat
+                // it as a ghost so the coordinator durably deletes it instead
+                // of re-donating it.
                 unknown.append(id)
             }
         }
@@ -366,7 +409,17 @@ actor SessionStore {
 
     // MARK: - Queries
 
-    func record(id: String) -> SessionRecord? { records[id] }
+    /// The single Spotion-only visibility policy. Everything user-facing
+    /// (Spotlight diff, menu, entity queries, project suggestions) goes through
+    /// here; the scan cache itself keeps every record.
+    private func isVisible(_ record: SessionRecord) -> Bool {
+        hiddenSessions.allowsVisibility(of: record.id)
+    }
+
+    func record(id: String) -> SessionRecord? {
+        guard let record = records[id], isVisible(record) else { return nil }
+        return record
+    }
 
     /// Deterministically select the newest record for one agent and optional
     /// project. Project matching is lexical and component-aware after path
@@ -389,7 +442,7 @@ actor SessionStore {
     }
 
     func all(limit: Int? = nil, matching query: String? = nil) -> [SessionRecord] {
-        var result = Array(records.values)
+        var result = records.values.filter(isVisible)
         if let query {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let needle = trimmed.lowercased()
@@ -410,7 +463,7 @@ actor SessionStore {
 
     func distinctProjects() -> [ProjectInfo] {
         var byCwd: [String: Date] = [:]
-        for record in records.values {
+        for record in records.values where isVisible(record) {
             byCwd[record.cwd] = max(byCwd[record.cwd] ?? .distantPast, record.lastActivityAt)
         }
         return byCwd
@@ -437,6 +490,62 @@ actor SessionStore {
         titled(records: all(limit: limit, matching: query))
     }
 
+    // MARK: - Spotion-only hidden sessions
+
+    func hideSession(id: String) throws -> Bool {
+        if hiddenSessions.contains(id) { return false }
+        guard let record = records[id] else { throw SpotionError.sessionNotFound(id) }
+        let snapshot = HiddenSessionSnapshot(
+            id: id,
+            agent: record.agent,
+            title: displayTitle(for: record),
+            projectName: record.projectName,
+            cwd: record.cwd,
+            filePath: record.filePath)
+        let changed = try hiddenSessions.hide(snapshot)
+        if changed {
+            cache.dirtyIDs.remove(id)
+            persist()
+            hiddenStateRuntimeError = nil
+        }
+        return changed
+    }
+
+    func restoreSession(id: String) throws -> Bool {
+        guard hiddenSessions.contains(id) else { return false }
+        guard records[id] != nil else {
+            throw SpotionError.hiddenSessionSourceUnavailable(id)
+        }
+
+        // Make the Spotlight re-donation obligation durable before clearing
+        // the independent hide state. A crash between the two writes then
+        // leaves either a still-hidden session or a visible session queued for
+        // upsert, never a restored session that remains absent indefinitely.
+        let wasDirty = cache.dirtyIDs.contains(id)
+        cache.dirtyIDs.insert(id)
+        do {
+            try persistCache()
+        } catch {
+            if !wasDirty { cache.dirtyIDs.remove(id) }
+            throw error
+        }
+
+        // A failed hide-state write may leave one harmless dirty retry queued;
+        // it must not erase the already-durable re-donation obligation.
+        _ = try hiddenSessions.restore(id: id)
+        hiddenStateRuntimeError = nil
+        return true
+    }
+
+    func hiddenSessionSnapshots() -> [HiddenSessionSnapshot] {
+        hiddenSessions.snapshots()
+    }
+
+    /// Non-fatal state problems worth showing in Settings.
+    func warnings() -> [String] {
+        [hiddenStateRuntimeError ?? hiddenSessions.statusMessage].compactMap { $0 }
+    }
+
     func scanReport() -> String {
         var lines = [
             "Spotion scan report",
@@ -459,12 +568,16 @@ actor SessionStore {
 
     private func persist() {
         do {
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: cacheURL, options: .atomic)
+            try persistCache()
         } catch {
             NSLog("Spotion: cache persist failed: %@", error.localizedDescription)
         }
+    }
+
+    private func persistCache() throws {
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(cache)
+        try data.write(to: cacheURL, options: .atomic)
     }
 }

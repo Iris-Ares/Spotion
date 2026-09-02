@@ -6,6 +6,7 @@ import Testing
         var codexHome: URL
         var claudeHome: URL
         var cacheURL: URL
+        var hiddenSessionsURL: URL
     }
 
     private func makeEnv() throws -> Env {
@@ -13,12 +14,14 @@ import Testing
         return Env(
             codexHome: root.appendingPathComponent("codex"),
             claudeHome: root.appendingPathComponent("claude"),
-            cacheURL: root.appendingPathComponent("cache/scan-cache.json"))
+            cacheURL: root.appendingPathComponent("cache/scan-cache.json"),
+            hiddenSessionsURL: root.appendingPathComponent("state/hidden-sessions.json"))
     }
 
     private func makeStore(_ env: Env) -> SessionStore {
         SessionStore(
             cacheURL: env.cacheURL,
+            hiddenSessionsURL: env.hiddenSessionsURL,
             codexScanner: CodexScanner(codexHome: env.codexHome),
             claudeScanner: ClaudeScanner(claudeHome: env.claudeHome))
     }
@@ -774,5 +777,161 @@ import Testing
 
         let d2 = await store.refresh(enabledAgents: [.codex])
         #expect(d2.deletedIDs == ["claude:\(ClaudeScannerTests.uuid)"])
+    }
+
+    @Test func hiddenSessionIsExcludedAndMutationRetriesAcrossRelaunch() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+        let codexID = "codex:\(CodexScannerTests.uuid)"
+        let claudeID = "claude:\(ClaudeScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+
+        #expect(try await store.hideSession(id: codexID))
+        #expect(try await !store.hideSession(id: codexID))
+        let hidden = await store.refresh(enabledAgents: both)
+        #expect(hidden.upserts.isEmpty)
+        #expect(hidden.deletedIDs == [codexID])
+        #expect(await store.record(id: codexID) == nil)
+        #expect(await store.allTitled(matching: "Codex").isEmpty)
+        #expect(await store.allTitled().map(\.record.id) == [claudeID])
+        let snapshots = await store.hiddenSessionSnapshots()
+        #expect(snapshots.map(\.id) == [codexID])
+        #expect(snapshots.first?.agent == .codex)
+        #expect(snapshots.first?.projectName == "proj")
+        #expect(await store.markDirty(ids: [codexID]) == [codexID])
+
+        // Simulate a timed-out Spotlight deletion: without markIndexed, the
+        // deletion obligation must remain in the scan cache.
+        let retry = await store.refresh(enabledAgents: both)
+        #expect(retry.deletedIDs == [codexID])
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let afterRelaunch = await relaunched.refresh(enabledAgents: both)
+        #expect(afterRelaunch.deletedIDs == [codexID])
+        await relaunched.markIndexed(afterRelaunch)
+        #expect(await relaunched.refresh(enabledAgents: both).isEmpty)
+
+        // Replacing the scan cache must not erase the independent hide list.
+        let resetCacheStore = SessionStore(
+            cacheURL: env.cacheURL.deletingLastPathComponent().appendingPathComponent("reset-cache.json"),
+            hiddenSessionsURL: env.hiddenSessionsURL,
+            codexScanner: CodexScanner(codexHome: env.codexHome),
+            claudeScanner: ClaudeScanner(claudeHome: env.claudeHome))
+        await resetCacheStore.bootstrap()
+        let afterCacheReset = await resetCacheStore.refresh(enabledAgents: both)
+        #expect(afterCacheReset.upserts.map(\.id) == [claudeID])
+
+        // A full rebuild must still omit hidden sessions.
+        await relaunched.forgetIndexed()
+        let rebuild = await relaunched.refresh(enabledAgents: both)
+        #expect(rebuild.upserts.map(\.id) == [claudeID])
+        await relaunched.markIndexed(rebuild)
+
+        #expect(try await relaunched.restoreSession(id: codexID))
+        #expect(try await !relaunched.restoreSession(id: codexID))
+        let restored = await relaunched.refresh(enabledAgents: both)
+        #expect(restored.upserts.map(\.id) == [codexID])
+        await relaunched.markIndexed(restored)
+        #expect(await relaunched.refresh(enabledAgents: both).isEmpty)
+    }
+
+    @Test func hiddenSessionSurvivesAgentDisableAndPrunesAfterSourceDeletion() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+        let codexID = "codex:\(CodexScannerTests.uuid)"
+        let duplicateRel = "sessions/2026/08/13/rollout-duplicate-\(CodexScannerTests.uuid).jsonl"
+        try TestSupport.write(
+            [CodexScannerTests.meta(), CodexScannerTests.userMessage("duplicate rollout")]
+                .joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(duplicateRel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.hideSession(id: codexID))
+        let hideDiff = await store.refresh(enabledAgents: both)
+        await store.markIndexed(hideDiff)
+
+        // Disabling an agent removes its scan-cache entries, but that is not
+        // evidence that its source transcript was deleted.
+        _ = await store.refresh(enabledAgents: [.claude])
+        #expect(await store.hiddenSessionSnapshots().map(\.id) == [codexID])
+
+        let enabledAgain = await store.refresh(enabledAgents: both)
+        #expect(!enabledAgain.upserts.contains { $0.id == codexID })
+        #expect(await store.hiddenSessionSnapshots().map(\.id) == [codexID])
+
+        try FileManager.default.removeItem(
+            at: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        _ = await store.refresh(enabledAgents: both)
+        #expect(await store.hiddenSessionSnapshots().map(\.id) == [codexID])
+
+        try FileManager.default.removeItem(at: env.codexHome.appendingPathComponent(duplicateRel))
+        _ = await store.refresh(enabledAgents: both)
+        #expect(await store.hiddenSessionSnapshots().isEmpty)
+    }
+
+    @Test func hiddenSessionSurvivesCacheResetWhileSourceIsUnusable() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.hideSession(id: id))
+        let hidden = await store.refresh(enabledAgents: both)
+        await store.markIndexed(hidden)
+
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try TestSupport.write(
+            "temporarily unusable transcript\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        _ = await relaunched.refresh(enabledAgents: both)
+        #expect(await relaunched.hiddenSessionSnapshots().map(\.id) == [id])
+
+        try writeCodexSession(env)
+        let recovered = await relaunched.refresh(enabledAgents: both)
+        #expect(!recovered.upserts.contains { $0.id == id })
+        #expect(await relaunched.hiddenSessionSnapshots().map(\.id) == [id])
+    }
+
+    @Test func restoreRequiresDurableRedonationBeforeClearingHideState() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+        #expect(try await store.hideSession(id: id))
+        let hidden = await store.refresh(enabledAgents: both)
+        await store.markIndexed(hidden)
+
+        // A directory at the cache file path makes the prerequisite atomic
+        // cache write fail while the independent hide store remains writable.
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try FileManager.default.createDirectory(at: env.cacheURL, withIntermediateDirectories: false)
+        var restoreFailed = false
+        do {
+            _ = try await store.restoreSession(id: id)
+        } catch {
+            restoreFailed = true
+        }
+        #expect(restoreFailed)
+        #expect(await store.hiddenSessionSnapshots().map(\.id) == [id])
     }
 }

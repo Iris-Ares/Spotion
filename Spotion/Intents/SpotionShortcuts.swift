@@ -34,5 +34,11 @@ struct SpotionShortcuts: AppShortcutsProvider {
             shortTitle: "Continue Latest Claude",
             systemImageName: "asterisk.circle"
         )
+        AppShortcut(
+            intent: HideSessionIntent(),
+            phrases: ["Hide a session from \(.applicationName)"],
+            shortTitle: "Hide Session",
+            systemImageName: "eye.slash"
+        )
     }
 }

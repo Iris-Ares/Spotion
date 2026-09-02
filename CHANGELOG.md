@@ -46,6 +46,11 @@ will get a dated section here that doubles as its release notes.
 - Codex sessions are now searchable by their git branch (parsed from the rollout's
   `session_meta.payload.git.branch`); the scan cache advances to v7 so existing
   sessions are reparsed once ([#17](https://github.com/Iris-Ares/Spotion/pull/17)).
+- *Hide Session from Spotion* Spotlight action: drop one session from Spotlight,
+  the menu bar, and suggestions without touching the Codex/Claude source; restore
+  it from Settings → Index → Hidden sessions. Hide state lives in its own
+  sidecar file (with a recovery copy) and fails closed if unreadable
+  ([#26](https://github.com/Iris-Ares/Spotion/pull/26)).
 
 ### Fixed
 
