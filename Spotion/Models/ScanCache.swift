@@ -9,10 +9,10 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
-    /// v8: touched-file hydration state; v7: Codex git branch; v6: later prompt
+    /// v9: source-home identity; v8: touched-file hydration state; v7: Codex git branch; v6: later prompt
     /// preference and hydration state; v5: iconSources; v4: pendingGhostDeletions;
     /// v3: dirtyIDs; v2: head expansion
-    static let currentVersion = 8
+    static let currentVersion = 9
 
     var version: Int = currentVersion
     /// key = absolute session file path
@@ -28,7 +28,7 @@ struct ScanCache: Codable, Sendable {
     /// nor indexedIDs (ghosts from system reindex requests or late zombie
     /// mutations). Retried every refresh until the deletion lands.
     var pendingGhostDeletions: Set<String> = []
-    /// codex sessionID → thread_name (from ~/.codex/session_index.jsonl)
+    /// source-aware Codex record id → thread_name (from each home's session_index.jsonl)
     var codexTitles: [String: String] = [:]
     /// AgentKind.rawValue → opaque fingerprint of the icon source last folded
     /// into the dirty set (donated thumbnails embed the handler app's icon, so

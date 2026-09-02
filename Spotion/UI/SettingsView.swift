@@ -1,3 +1,4 @@
+import AppKit
 import ServiceManagement
 import Sparkle
 import SwiftUI
@@ -12,7 +13,7 @@ struct SettingsView: View {
             IndexSettingsTab()
                 .tabItem { Label("Index", systemImage: "magnifyingglass") }
         }
-        .frame(width: 480, height: 360)
+        .frame(width: 520, height: 520)
     }
 }
 
@@ -267,6 +268,9 @@ private struct IndexSettingsTab: View {
     @State private var includeArchivedCodex = SpotionSettings.includeArchivedCodexSessions
     @State private var checkTerm = ""
     @State private var checkResult: String?
+    @State private var additionalCodexHomes = SpotionSettings.additionalAgentHomes(for: .codex)
+    @State private var additionalClaudeHomes = SpotionSettings.additionalAgentHomes(for: .claude)
+    @State private var agentHomeError: String?
 
     var body: some View {
         Form {
@@ -371,6 +375,22 @@ private struct IndexSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Additional agent homes") {
+                Text("Add existing Codex or Claude Code state directories. Spotion scans only their normal session/title paths and never reads credentials or settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(additionalCodexHomes, id: \.self) { path in
+                    agentHomeRow(path: path, agent: .codex)
+                }
+                Button("Add Codex Home…") { addHome(for: .codex) }
+                ForEach(additionalClaudeHomes, id: \.self) { path in
+                    agentHomeRow(path: path, agent: .claude)
+                }
+                Button("Add Claude Code Home…") { addHome(for: .claude) }
+                if let agentHomeError {
+                    Text(agentHomeError).font(.caption).foregroundStyle(.red)
+                }
+            }
             Section("状态") {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
                 if state.archivedCodexCount > 0 {
@@ -453,5 +473,68 @@ private struct IndexSettingsTab: View {
                 AppCoordinator.shared.uiState.lastError = error.localizedDescription
             }
         }
+    }
+
+    @ViewBuilder
+    private func agentHomeRow(path: String, agent: AgentKind) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(agent.displayName) · \(AgentHomePathPolicy.displayPath(path))")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if !isReadableDirectory(path) {
+                    Text("Missing or unreadable — cached sessions are retained")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Spacer()
+            Button("Remove") { removeHome(path, for: agent) }
+                .buttonStyle(.borderless)
+        }
+    }
+
+    private func addHome(for agent: AgentKind) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose an existing \(agent.displayName) home"
+        panel.prompt = "Add Home"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let selected = panel.url,
+              let path = AgentHomePathPolicy.normalize(selected.path),
+              isReadableDirectory(path) else {
+            if panel.url != nil { agentHomeError = "Choose an existing readable directory." }
+            return
+        }
+        var paths = homes(for: agent)
+        paths.append(path)
+        SpotionSettings.setAdditionalAgentHomes(paths, for: agent)
+        reloadHomes()
+        agentHomeError = nil
+        Task { await AppCoordinator.shared.agentHomesChanged() }
+    }
+
+    private func removeHome(_ path: String, for agent: AgentKind) {
+        SpotionSettings.setAdditionalAgentHomes(homes(for: agent).filter { $0 != path }, for: agent)
+        reloadHomes()
+        agentHomeError = nil
+        Task { await AppCoordinator.shared.agentHomesChanged() }
+    }
+
+    private func homes(for agent: AgentKind) -> [String] {
+        agent == .codex ? additionalCodexHomes : additionalClaudeHomes
+    }
+
+    private func reloadHomes() {
+        additionalCodexHomes = SpotionSettings.additionalAgentHomes(for: .codex)
+        additionalClaudeHomes = SpotionSettings.additionalAgentHomes(for: .claude)
+    }
+
+    private func isReadableDirectory(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+            && FileManager.default.isReadableFile(atPath: path)
     }
 }

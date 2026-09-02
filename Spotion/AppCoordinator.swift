@@ -59,9 +59,7 @@ final class AppCoordinator {
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
             hiddenSessionsURL: appSupport.appendingPathComponent("hidden-sessions-v1.json"),
             projectExclusionsURL: appSupport.appendingPathComponent("project-exclusions-v1.json"),
-            codexScanner: CodexScanner(),
-            archivedCodexScanner: CodexScanner(source: .archived),
-            claudeScanner: ClaudeScanner(),
+            scanners: Self.configuredScanners(),
             historyWindow: SpotionSettings.spotlightHistoryWindow,
             pinnedSessionsURL: appSupport.appendingPathComponent("pinned-sessions-v1.json"),
             aliasesURL: appSupport.appendingPathComponent("session-aliases-v1.json")
@@ -134,17 +132,41 @@ final class AppCoordinator {
     }
 
     private func startWatcher() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        watcher = FileWatcher(paths: SessionWatchPaths.all(home: home)) {
+        watcher?.stop()
+        watcher = FileWatcher(paths: Self.watchedPaths()) {
             Task { @MainActor in await AppCoordinator.shared.refreshAndApply() }
         }
         watcher?.start()
     }
 
+    private static func configuredScanners() -> [any SessionScanner] {
+        var scanners: [any SessionScanner] = [
+            CodexScanner(),
+            CodexScanner(source: .archived),
+            ClaudeScanner(),
+        ]
+        scanners += SpotionSettings.additionalAgentHomes(for: .codex).map {
+            CodexScanner(codexHome: URL(fileURLWithPath: $0, isDirectory: true), isDefaultAgentHome: false)
+        }
+        scanners += SpotionSettings.additionalAgentHomes(for: .claude).map {
+            ClaudeScanner(claudeHome: URL(fileURLWithPath: $0, isDirectory: true), isDefaultAgentHome: false)
+        }
+        return scanners
+    }
+
+    private static func watchedPaths() -> [String] {
+        var paths: [String] = []
+        for scanner in configuredScanners() {
+            paths.append(scanner.rootPath)
+            if let codex = scanner as? CodexScanner { paths.append(codex.indexURL.path) }
+        }
+        return Array(Set(paths)).sorted()
+    }
+
     // MARK: - Scan → donate (everything goes through the serial pipeline)
 
     func refreshAndApply() async {
-        await enqueue { await self.performRefreshAndApply() }
+        _ = await enqueue { await self.performRefreshAndApply() }
     }
 
     /// Full rebuild with durable cross-launch retry: the obligation is
@@ -245,6 +267,7 @@ final class AppCoordinator {
     @discardableResult
     private func performRefreshAndApply() async -> Bool {
         await ensureReady()
+        await store.configureScanners(Self.configuredScanners())
         uiState.isScanning = true
         defer { uiState.isScanning = false }
         let started = Date()
@@ -352,6 +375,11 @@ final class AppCoordinator {
             }
             await self.performRefreshAndApply()
         }
+    }
+
+    func agentHomesChanged() async {
+        startWatcher()
+        await refreshAndApply()
     }
 
     // MARK: - Spotion-only hidden sessions
