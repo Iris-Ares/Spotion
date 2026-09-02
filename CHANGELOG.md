@@ -69,6 +69,11 @@ will get a dated section here that doubles as its release notes.
   give any session a local display name (Spotlight title and menu bar) while the
   agent's own title stays searchable; aliases never touch transcripts and live
   in their own sidecar file ([#23](https://github.com/Iris-Ares/Spotion/pull/23)).
+- Settings → Advanced → *Saved Quick Create projects*: an ordered list of folders
+  (with a standard folder picker) that *New Codex/Claude Session* offers first,
+  before recent-session projects — so a brand-new project is one keystroke away.
+  Missing folders stay listed but are never suggested; excluded projects never
+  appear ([#31](https://github.com/Iris-Ares/Spotion/pull/31)).
 
 ### Fixed
 

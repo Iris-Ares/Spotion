@@ -1,3 +1,4 @@
+import AppIntents
 import AppKit
 import Foundation
 import Observation
@@ -34,6 +35,7 @@ final class AppCoordinator {
 
     let store: SessionStore
     let indexer = SpotlightIndexer()
+    private var savedProjectStore: SavedProjectStore
     let uiState = UIState()
 
     private var readyTask: Task<Void, Never>?
@@ -61,6 +63,9 @@ final class AppCoordinator {
             pinnedSessionsURL: appSupport.appendingPathComponent("pinned-sessions-v1.json"),
             aliasesURL: appSupport.appendingPathComponent("session-aliases-v1.json")
         )
+        savedProjectStore = SavedProjectStore(
+            fileURL: appSupport.appendingPathComponent("saved-quick-create-projects-v1.json"))
+        savedProjectStore.load()
     }
 
     /// Idempotent: entity queries can be served as soon as the cache is loaded
@@ -504,18 +509,54 @@ final class AppCoordinator {
     }
 
     func recentProjects(limit: Int) async -> [ProjectEntity] {
-        await ensureReady()
-        return await store.distinctProjects().prefix(limit)
-            .map { ProjectEntity(id: $0.cwd, name: $0.name) }
+        await mergedProjects(limit: limit)
     }
 
     func matchingProjects(_ query: String, limit: Int) async -> [ProjectEntity] {
+        await mergedProjects(matching: query, limit: limit)
+    }
+
+    /// Saved folders first (user order), then recent-session projects. A saved
+    /// folder under an excluded project stays out of suggestions too — the
+    /// exclusion rule is the user's stronger statement.
+    private func mergedProjects(matching query: String? = nil, limit: Int) async -> [ProjectEntity] {
         await ensureReady()
-        let needle = query.lowercased()
-        return await store.distinctProjects()
-            .filter { $0.name.lowercased().contains(needle) || $0.cwd.lowercased().contains(needle) }
-            .prefix(limit)
-            .map { ProjectEntity(id: $0.cwd, name: $0.name) }
+        var saved: [SavedProject] = []
+        for project in savedProjectStore.projects()
+        where await !store.projectIsExcluded(cwd: project.path) {
+            saved.append(project)
+        }
+        let recent = await store.distinctProjects()
+        return QuickCreateProjectMerger.merge(
+            saved: saved, recent: recent, matching: query, limit: limit
+        ).map { ProjectEntity(id: $0.path, name: $0.name) }
+    }
+
+    // MARK: - Saved Quick Create projects
+
+    func savedProjects() -> [SavedProject] {
+        savedProjectStore.projects()
+    }
+
+    func savedProjectStorageWarning() -> String? {
+        savedProjectStore.warning
+    }
+
+    func addSavedProject(path: String) throws {
+        if try savedProjectStore.add(path) {
+            SpotionShortcuts.updateAppShortcutParameters()
+        }
+    }
+
+    func removeSavedProject(path: String) throws {
+        if try savedProjectStore.remove(path) {
+            SpotionShortcuts.updateAppShortcutParameters()
+        }
+    }
+
+    func moveSavedProject(from source: Int, to destination: Int) throws {
+        try savedProjectStore.move(from: source, to: destination)
+        SpotionShortcuts.updateAppShortcutParameters()
     }
 
     func selfCheck(term: String) async -> Int {

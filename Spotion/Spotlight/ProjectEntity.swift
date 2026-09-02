@@ -1,7 +1,7 @@
 import AppIntents
 
-/// The optional "Project" parameter for Quick Create: deduplicated cwds of
-/// known sessions, most recently used first.
+/// The optional "Project" parameter for Quick Create: valid saved folders in
+/// user order, followed by unique known-session cwds in recency order.
 struct ProjectEntity: AppEntity {
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Project")
     static let defaultQuery = ProjectEntityQuery()
