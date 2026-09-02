@@ -60,6 +60,11 @@ will get a dated section here that doubles as its release notes.
   suggestions without touching project files, transcripts, or macOS Spotlight
   Privacy; the rule list has a safety copy and fails closed if unreadable
   ([#27](https://github.com/Iris-Ares/Spotion/pull/27)).
+- *Pin Spotion Session* / *Unpin Spotion Session* Spotlight actions: pinned
+  sessions get a Pinned section in the menu bar, a higher Spotlight donation
+  priority, and stay searchable regardless of the history window (hidden and
+  excluded sessions still win). Pins live in their own sidecar file
+  ([#22](https://github.com/Iris-Ares/Spotion/pull/22)).
 
 ### Fixed
 
