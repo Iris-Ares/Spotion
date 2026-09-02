@@ -58,7 +58,8 @@ final class AppCoordinator {
             codexScanner: CodexScanner(),
             claudeScanner: ClaudeScanner(),
             historyWindow: SpotionSettings.spotlightHistoryWindow,
-            pinnedSessionsURL: appSupport.appendingPathComponent("pinned-sessions-v1.json")
+            pinnedSessionsURL: appSupport.appendingPathComponent("pinned-sessions-v1.json"),
+            aliasesURL: appSupport.appendingPathComponent("session-aliases-v1.json")
         )
     }
 
@@ -410,6 +411,37 @@ final class AppCoordinator {
             case .changed:
                 guard await self.performRefreshAndApply() else {
                     throw SpotionError.indexMutationPending("置顶状态")
+                }
+            }
+        }
+    }
+
+    // MARK: - Spotion-only aliases
+
+    func setSessionAlias(id: String, alias: String) async throws {
+        try await updateAlias(id: id, alias: alias)
+    }
+
+    func clearSessionAlias(id: String) async throws {
+        try await updateAlias(id: id, alias: nil)
+    }
+
+    private func updateAlias(id: String, alias: String?) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            let result = if let alias {
+                try await self.store.setAlias(id: id, alias: alias)
+            } else {
+                try await self.store.clearAlias(id: id)
+            }
+            switch result {
+            case .unknownSession:
+                throw SpotionError.sessionNotFound(id)
+            case .unchanged:
+                return
+            case .changed:
+                guard await self.performRefreshAndApply() else {
+                    throw SpotionError.indexMutationPending("别名")
                 }
             }
         }

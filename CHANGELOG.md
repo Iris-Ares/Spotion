@@ -65,6 +65,10 @@ will get a dated section here that doubles as its release notes.
   priority, and stay searchable regardless of the history window (hidden and
   excluded sessions still win). Pins live in their own sidecar file
   ([#22](https://github.com/Iris-Ares/Spotion/pull/22)).
+- *Set Spotion Session Alias* / *Clear Spotion Session Alias* Spotlight actions:
+  give any session a local display name (Spotlight title and menu bar) while the
+  agent's own title stays searchable; aliases never touch transcripts and live
+  in their own sidecar file ([#23](https://github.com/Iris-Ares/Spotion/pull/23)).
 
 ### Fixed
 

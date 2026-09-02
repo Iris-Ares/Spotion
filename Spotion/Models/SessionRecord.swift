@@ -96,14 +96,15 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         "\(agent.rawValue):\(sessionID)"
     }
 
-    func spotlightKeywords() -> [String] {
+    func spotlightKeywords(sourceTitle: String? = nil) -> [String] {
         Self.spotlightKeywords(
             projectName: projectName,
             agent: agent,
             sessionID: sessionID,
             id: id,
             gitBranch: gitBranch,
-            cwd: cwd
+            cwd: cwd,
+            sourceTitle: sourceTitle
         )
     }
 
@@ -113,9 +114,13 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         sessionID: String,
         id: String,
         gitBranch: String?,
-        cwd: String
+        cwd: String,
+        sourceTitle: String? = nil
     ) -> [String] {
+        // The agent-derived title stays searchable when a Spotion alias
+        // replaces the visible title.
         var candidates = [projectName, agent.displayName, agent.rawValue, "session"]
+        if let sourceTitle { candidates.append(sourceTitle) }
         if let gitBranch { candidates.append(gitBranch) }
         candidates += cwd.split(separator: "/").map(String.init)
         candidates += [sessionID, id]

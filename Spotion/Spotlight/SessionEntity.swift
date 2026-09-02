@@ -9,6 +9,8 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var sessionID: String
     var isPinned: Bool
     var title: String
+    /// Agent-derived title before a Spotion-only alias is applied.
+    var sourceTitle: String
     var projectName: String
     var cwd: String
     var agent: AgentKind
@@ -24,6 +26,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.sessionID = record.sessionID
         self.isPinned = titled.isPinned
         self.title = titled.title
+        self.sourceTitle = titled.sourceTitle
         self.projectName = record.projectName
         self.cwd = record.cwd
         self.agent = record.agent
@@ -70,7 +73,8 @@ struct SessionEntity: AppEntity, IndexedEntity {
             sessionID: sessionID,
             id: id,
             gitBranch: gitBranch,
-            cwd: cwd
+            cwd: cwd,
+            sourceTitle: sourceTitle == title ? nil : sourceTitle
         )
         attributes.contentCreationDate = startedAt
         attributes.contentModificationDate = lastActivityAt
