@@ -21,6 +21,8 @@ final class UIState {
     /// every cycle; `lastError` is reserved for the apply failure itself.
     var warnings: [String] = []
     var hiddenSessions: [HiddenSessionSnapshot] = []
+    var excludedProjects: [ProjectExclusion] = []
+    var availableProjects: [ProjectInfo] = []
 }
 
 /// Wires up store / indexer / watcher; the single entry point for App Intents
@@ -51,6 +53,7 @@ final class AppCoordinator {
         store = SessionStore(
             cacheURL: appSupport.appendingPathComponent("scan-cache-v1.json"),
             hiddenSessionsURL: appSupport.appendingPathComponent("hidden-sessions-v1.json"),
+            projectExclusionsURL: appSupport.appendingPathComponent("project-exclusions-v1.json"),
             codexScanner: CodexScanner(),
             claudeScanner: ClaudeScanner(),
             historyWindow: SpotionSettings.spotlightHistoryWindow
@@ -294,6 +297,8 @@ final class AppCoordinator {
         uiState.lastIndexed = Date()
         uiState.recent = await store.allTitled(limit: 5)
         uiState.hiddenSessions = await store.hiddenSessionSnapshots()
+        uiState.excludedProjects = await store.projectExclusionList()
+        uiState.availableProjects = await store.distinctProjects()
         if !diff.isEmpty {
             NSLog(
                 "Spotion refresh: codex=%d claude=%d failures=%d upserts=%d deletes=%d in %.1fs",
@@ -354,6 +359,28 @@ final class AppCoordinator {
             guard try await self.store.restoreSession(id: id) else { return }
             guard await self.performRefreshAndApply() else {
                 throw SpotionError.indexMutationPending("恢复状态")
+            }
+        }
+    }
+
+    // MARK: - Project exclusions
+
+    func addProjectExclusion(path: String) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            guard try await self.store.addProjectExclusion(path: path) else { return }
+            guard await self.performRefreshAndApply() else {
+                throw SpotionError.indexMutationPending("项目排除规则")
+            }
+        }
+    }
+
+    func removeProjectExclusion(path: String) async throws {
+        try await enqueueThrowing {
+            await self.ensureReady()
+            guard try await self.store.removeProjectExclusion(path: path) else { return }
+            guard await self.performRefreshAndApply() else {
+                throw SpotionError.indexMutationPending("项目恢复规则")
             }
         }
     }

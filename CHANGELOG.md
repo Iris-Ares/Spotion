@@ -55,6 +55,11 @@ will get a dated section here that doubles as its release notes.
   keep only recently active sessions in Spotlight while every session stays in
   the scan cache and on disk; Settings shows the visible / total count
   ([#35](https://github.com/Iris-Ares/Spotion/pull/35)).
+- Settings → Index → *Excluded projects*: keep every session under a chosen
+  folder (and its descendants) out of Spotlight, the menu bar, and project
+  suggestions without touching project files, transcripts, or macOS Spotlight
+  Privacy; the rule list has a safety copy and fails closed if unreadable
+  ([#27](https://github.com/Iris-Ares/Spotion/pull/27)).
 
 ### Fixed
 

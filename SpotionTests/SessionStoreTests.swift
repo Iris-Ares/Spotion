@@ -7,6 +7,7 @@ import Testing
         var claudeHome: URL
         var cacheURL: URL
         var hiddenSessionsURL: URL
+        var projectExclusionsURL: URL
     }
 
     private func makeEnv() throws -> Env {
@@ -15,13 +16,15 @@ import Testing
             codexHome: root.appendingPathComponent("codex"),
             claudeHome: root.appendingPathComponent("claude"),
             cacheURL: root.appendingPathComponent("cache/scan-cache.json"),
-            hiddenSessionsURL: root.appendingPathComponent("state/hidden-sessions.json"))
+            hiddenSessionsURL: root.appendingPathComponent("state/hidden-sessions.json"),
+            projectExclusionsURL: root.appendingPathComponent("state/project-exclusions.json"))
     }
 
     private func makeStore(_ env: Env) -> SessionStore {
         SessionStore(
             cacheURL: env.cacheURL,
             hiddenSessionsURL: env.hiddenSessionsURL,
+            projectExclusionsURL: env.projectExclusionsURL,
             codexScanner: CodexScanner(codexHome: env.codexHome),
             claudeScanner: ClaudeScanner(claudeHome: env.claudeHome))
     }
@@ -825,6 +828,7 @@ import Testing
         let resetCacheStore = SessionStore(
             cacheURL: env.cacheURL.deletingLastPathComponent().appendingPathComponent("reset-cache.json"),
             hiddenSessionsURL: env.hiddenSessionsURL,
+            projectExclusionsURL: env.projectExclusionsURL,
             codexScanner: CodexScanner(codexHome: env.codexHome),
             claudeScanner: ClaudeScanner(claudeHome: env.claudeHome))
         await resetCacheStore.bootstrap()
@@ -1209,5 +1213,163 @@ import Testing
         )
         #expect(fallback.upserts.isEmpty)
         #expect(fallback.deletedIDs == ["codex:\(CodexScannerTests.uuid)"])
+    }
+
+    @Test func projectExclusionFiltersQueriesAndRetriesMutationsAcrossRelaunch() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(cwd: "/work/client/app"),
+                CodexScannerTests.userMessage("client codex prompt"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        try TestSupport.write(
+            [
+                ClaudeScannerTests.user("sibling claude prompt", cwd: "/work/client-old"),
+                ClaudeScannerTests.customTitle("Sibling session"),
+            ].joined(separator: "\n") + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+        let codexID = "codex:\(CodexScannerTests.uuid)"
+        let claudeID = "claude:\(ClaudeScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        await store.markIndexed(initial)
+
+        #expect(try await store.addProjectExclusion(path: "/work/client"))
+        #expect(try await !store.addProjectExclusion(path: "/work/client/./"))
+        let excluded = await store.refresh(enabledAgents: both)
+        #expect(excluded.upserts.isEmpty)
+        #expect(excluded.deletedIDs == [codexID])
+        #expect(await store.record(id: codexID) == nil)
+        #expect(await store.allTitled(matching: "client codex").isEmpty)
+        #expect(await store.allTitled().map(\.record.id) == [claudeID])
+        #expect(await store.distinctProjects().map(\.cwd) == ["/work/client-old"])
+        #expect(await store.markDirty(ids: [codexID]) == [codexID])
+
+        _ = await store.refresh(enabledAgents: [.claude])
+        #expect(await store.projectExclusionList().map(\.path) == ["/work/client"])
+        #expect(await store.refresh(enabledAgents: both).deletedIDs == [codexID])
+
+        // A timed-out deletion remains retryable until markIndexed confirms it.
+        #expect(await store.refresh(enabledAgents: both).deletedIDs == [codexID])
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let retry = await relaunched.refresh(enabledAgents: both)
+        #expect(retry.deletedIDs == [codexID])
+        await relaunched.markIndexed(retry)
+
+        // A fresh scan cache and a full rebuild both retain the independent
+        // project policy and donate only the sibling-prefix session.
+        let resetCacheStore = SessionStore(
+            cacheURL: env.cacheURL.deletingLastPathComponent().appendingPathComponent("reset-cache.json"),
+            projectExclusionsURL: env.projectExclusionsURL,
+            codexScanner: CodexScanner(codexHome: env.codexHome),
+            claudeScanner: ClaudeScanner(claudeHome: env.claudeHome))
+        await resetCacheStore.bootstrap()
+        #expect(await resetCacheStore.refresh(enabledAgents: both).upserts.map(\.id) == [claudeID])
+        await relaunched.forgetIndexed()
+        let rebuild = await relaunched.refresh(enabledAgents: both)
+        #expect(rebuild.upserts.map(\.id) == [claudeID])
+        await relaunched.markIndexed(rebuild)
+
+        // A watcher-discovered session below the excluded root is retained in
+        // the scan model but never enters any upsert batch.
+        let secondUUID = "bbbbcccc-1122-3344-5566-77889900aabb"
+        let secondRel = "sessions/2026/08/14/rollout-\(secondUUID).jsonl"
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(cwd: "/work/client/new", id: secondUUID),
+                CodexScannerTests.userMessage("new excluded session"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(secondRel))
+        let watcherRefresh = await relaunched.refresh(enabledAgents: both)
+        #expect(!watcherRefresh.upserts.contains { $0.id == "codex:\(secondUUID)" })
+
+        // Overlapping child removal cannot re-include records still covered by
+        // the parent; removing the final parent re-donates only affected ids.
+        #expect(try await relaunched.addProjectExclusion(path: "/work/client/app"))
+        #expect(await relaunched.refresh(enabledAgents: both).isEmpty)
+        #expect(try await relaunched.removeProjectExclusion(path: "/work/client/app"))
+        #expect(await relaunched.refresh(enabledAgents: both).isEmpty)
+        #expect(try await relaunched.removeProjectExclusion(path: "/work/client"))
+        let restored = await relaunched.refresh(enabledAgents: both)
+        #expect(Set(restored.upserts.map(\.id)) == [codexID, "codex:\(secondUUID)"])
+        await relaunched.markIndexed(restored)
+        #expect(await relaunched.refresh(enabledAgents: both).isEmpty)
+    }
+
+    @Test func exclusionFollowsWinningCwdAndPersistsWhenSourcesDisappear() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(cwd: "/work/client/app"),
+                CodexScannerTests.userMessage("inside"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex])
+        await store.markIndexed(initial)
+        #expect(try await store.addProjectExclusion(path: "/work/client"))
+        let hidden = await store.refresh(enabledAgents: [.codex])
+        await store.markIndexed(hidden)
+
+        // A resumed/forked session can have duplicate rollout paths. Once the
+        // newest record for that id is outside the excluded tree it is targeted
+        // for re-donation.
+        let movedRel = "sessions/2026/08/14/rollout-moved-\(CodexScannerTests.uuid).jsonl"
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(cwd: "/work/public"),
+                CodexScannerTests.userMessage("moved outside"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(movedRel))
+        let moved = await store.refresh(enabledAgents: [.codex])
+        #expect(moved.upserts.map(\.id) == ["codex:\(CodexScannerTests.uuid)"])
+        await store.markIndexed(moved)
+
+        // Removing the newer rollout reveals the still-excluded fallback and
+        // therefore deletes the donated id again.
+        try FileManager.default.removeItem(at: env.codexHome.appendingPathComponent(movedRel))
+        let fallback = await store.refresh(enabledAgents: [.codex])
+        #expect(fallback.deletedIDs == ["codex:\(CodexScannerTests.uuid)"])
+        await store.markIndexed(fallback)
+
+        // Missing transcripts do not erase an explicit directory policy.
+        try FileManager.default.removeItem(
+            at: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        _ = await store.refresh(enabledAgents: [.codex])
+        #expect(await store.projectExclusionList().map(\.path) == ["/work/client"])
+    }
+
+    @Test func exclusionRemovalRequiresDurableRedonationBeforeClearingRule() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        let id = "codex:\(CodexScannerTests.uuid)"
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex])
+        await store.markIndexed(initial)
+        #expect(try await store.addProjectExclusion(path: "/tmp/proj"))
+        let excluded = await store.refresh(enabledAgents: [.codex])
+        await store.markIndexed(excluded)
+
+        // A directory at the cache file path makes the prerequisite atomic
+        // cache write fail while the independent exclusion store is writable.
+        try FileManager.default.removeItem(at: env.cacheURL)
+        try FileManager.default.createDirectory(at: env.cacheURL, withIntermediateDirectories: false)
+        var removalFailed = false
+        do {
+            _ = try await store.removeProjectExclusion(path: "/tmp/proj")
+        } catch {
+            removalFailed = true
+        }
+        #expect(removalFailed)
+        #expect(await store.projectExclusionList().map(\.path) == ["/tmp/proj"])
+        #expect(await store.record(id: id) == nil)
     }
 }
