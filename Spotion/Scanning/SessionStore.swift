@@ -45,6 +45,11 @@ actor SessionStore {
     /// derive the durable Spotlight diff for the current refresh.
     private var historyWindow: SpotlightHistoryWindow
     private var historyReferenceDate: Date
+    /// Indexed records whose root could not be enumerated on the last refresh:
+    /// they may be stale, so they stay in Spotlight (and therefore openable)
+    /// until a trustworthy pass confirms they fell outside the window. The
+    /// only refresh-derived visibility state; empty in steady state.
+    private var protectedIDs = Set<String>()
     private(set) var lastStats = StoreStats()
     /// A cache file exists on disk but is unusable (version mismatch / decode
     /// failure): the old indexedIDs are gone, so sessions deleted before the
@@ -332,7 +337,6 @@ actor SessionStore {
             }
         }
 
-        let eligibleIDs = Set(records.values.filter(isVisible).map(\.id))
         // If an enabled root could not be enumerated, its cached activity time
         // may be stale. Keep already-indexed items in Spotlight until a
         // trustworthy pass can confirm they are genuinely outside the window.
@@ -340,12 +344,13 @@ actor SessionStore {
         let untrustworthyRootPaths = roots
             .filter { $0.enabled && !$0.trustworthy }
             .map(\.path)
-        let protectedIndexedIDs = Set(records.values.lazy.filter { record in
+        protectedIDs = Set(records.values.lazy.filter { record in
             self.cache.indexedIDs.contains(record.id)
-                && self.hiddenSessions.allowsVisibility(of: record.id)
+                && self.isPolicyAllowed(record)
                 && untrustworthyRootPaths.contains { record.filePath.hasPrefix($0 + "/") }
         }.map(\.id))
-        let visibleIDs = eligibleIDs.union(protectedIndexedIDs)
+        let eligibleIDs = Set(records.values.filter(isEligible).map(\.id))
+        let visibleIDs = eligibleIDs.union(protectedIDs)
         // Changed ids enter the dirty set and stay until markIndexed (donation
         // confirmed) clears them — failures therefore retry automatically.
         cache.dirtyIDs.formUnion(changedIDs)
@@ -376,15 +381,13 @@ actor SessionStore {
     }
 
     /// Called when the system (Core Spotlight delegate) requests specific ids:
-    /// visible ids (or ids still indexed under an untrustworthy root) are forced
-    /// into the dirty set so the next refresh re-donates them; missing, hidden,
-    /// or policy-ineligible ids are returned so the caller can durably delete
-    /// any stale Spotlight item directly.
+    /// visible ids are forced into the dirty set so the next refresh re-donates
+    /// them; missing, hidden, or policy-ineligible ids are returned so the caller
+    /// can durably delete any stale Spotlight item directly.
     func markDirty(ids: [String]) -> [String] {
         var unknown: [String] = []
         for id in ids {
-            if let record = records[id], hiddenSessions.allowsVisibility(of: id),
-               isVisible(record) || cache.indexedIDs.contains(id) {
+            if let record = records[id], isVisible(record) {
                 cache.dirtyIDs.insert(id)
             } else {
                 // A system reindex request for a hidden id means an item is
@@ -443,7 +446,19 @@ actor SessionStore {
     /// (Spotlight diff, menu, entity queries, project suggestions) goes through
     /// here; the scan cache itself keeps every record.
     private func isVisible(_ record: SessionRecord) -> Bool {
+        isEligible(record) || (isPolicyAllowed(record) && protectedIDs.contains(record.id))
+    }
+
+    /// Spotion-only user policies (hidden…). Fail-closed stores answer false
+    /// for everything while unreadable.
+    private func isPolicyAllowed(_ record: SessionRecord) -> Bool {
         hiddenSessions.allowsVisibility(of: record.id)
+    }
+
+    /// Policy-allowed and inside the history window as of the last refresh's
+    /// frozen clock (so queries and the Spotlight diff agree).
+    private func isEligible(_ record: SessionRecord) -> Bool {
+        isPolicyAllowed(record)
             && historyWindow.contains(lastActivityAt: record.lastActivityAt, now: historyReferenceDate)
     }
 
