@@ -84,6 +84,12 @@ will get a dated section here that doubles as its release notes.
   indexed one (`codex fork <id>` / `claude --resume=<id> --fork-session`) in the
   configured terminal, leaving the source session untouched
   ([#49](https://github.com/Iris-Ares/Spotion/pull/49)).
+- *Copy Session Resume Command* Spotlight action: put the exact `codex resume` /
+  `claude --resume` command (POSIX-quoted, same construction as the launcher)
+  on the clipboard without opening a terminal; nothing is written if the
+  executable or required directory is missing. The binary resolver now also
+  checks the process PATH before its login-shell fallback
+  ([#30](https://github.com/Iris-Ares/Spotion/pull/30)).
 
 ### Fixed
 
