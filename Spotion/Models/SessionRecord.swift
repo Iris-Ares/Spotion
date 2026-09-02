@@ -170,24 +170,48 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         return candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    func spotlightContentDescription(includeLaterPrompts: Bool) -> String {
+    func spotlightContentDescription(
+        includeLaterPrompts: Bool,
+        sourceTitle: String? = nil,
+        includeTouchedFiles: Bool = false
+    ) -> String {
         Self.spotlightContentDescription(
             firstPrompt: firstPrompt,
             laterPrompts: laterPromptSnippets,
             cwd: cwd,
-            includeLaterPrompts: includeLaterPrompts
+            includeLaterPrompts: includeLaterPrompts,
+            gitBranch: gitBranch,
+            sourceTitle: sourceTitle,
+            isArchived: isArchived,
+            touchedFilePaths: includeTouchedFiles ? touchedFilePaths : []
         )
     }
 
+    /// The Spotlight *UI* on macOS 26 matches app-entity results against the
+    /// title and this description only — `keywords` are honoured by
+    /// CSUserQuery but not by the typed-query UI. Everything a user should be
+    /// able to type to find a session therefore has to appear here as well.
+    /// Session IDs are deliberately left out: they stay keyword-only so the
+    /// visible snippet never shows raw identifiers.
     static func spotlightContentDescription(
         firstPrompt: String?,
         laterPrompts: [String],
         cwd: String,
-        includeLaterPrompts: Bool
+        includeLaterPrompts: Bool,
+        gitBranch: String? = nil,
+        sourceTitle: String? = nil,
+        isArchived: Bool = false,
+        touchedFilePaths: [String] = []
     ) -> String {
         var parts = [firstPrompt]
         if includeLaterPrompts { parts.append(contentsOf: laterPrompts.map(Optional.some)) }
         parts.append(cwd)
+        var metadata: [String] = []
+        if isArchived { metadata.append("Archived") }
+        if let gitBranch, !gitBranch.isEmpty { metadata.append(gitBranch) }
+        if let sourceTitle, !sourceTitle.isEmpty { metadata.append(sourceTitle) }
+        if !metadata.isEmpty { parts.append(metadata.joined(separator: " · ")) }
+        if !touchedFilePaths.isEmpty { parts.append(touchedFilePaths.joined(separator: " ")) }
         return parts.compactMap { $0 }.joined(separator: "\n")
     }
 }

@@ -49,8 +49,10 @@ struct ScanCache: Codable, Sendable {
 }
 
 enum DonatedContentGeneration {
+    /// v5 repeats branch / source title / archive state / touched files in the
+    /// content description (the Spotlight UI ignores keywords);
     /// v4 adds raw and agent-prefixed session IDs to donated keywords.
-    static let current = 4
+    static let current = 5
 
     static func requiresFullRebuild(stored: Int) -> Bool {
         stored < current

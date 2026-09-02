@@ -72,7 +72,11 @@ struct SessionEntity: AppEntity, IndexedEntity {
             firstPrompt: firstPromptSnippet,
             laterPrompts: laterPromptSnippets,
             cwd: cwd,
-            includeLaterPrompts: SpotionSettings.searchLaterPrompts
+            includeLaterPrompts: SpotionSettings.searchLaterPrompts,
+            gitBranch: gitBranch,
+            sourceTitle: sourceTitle == title ? nil : sourceTitle,
+            isArchived: isArchived,
+            touchedFilePaths: SpotionSettings.searchTouchedFiles ? touchedFilePaths : []
         )
         attributes.keywords = SessionRecord.spotlightKeywords(
             projectName: projectName,

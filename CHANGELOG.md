@@ -104,6 +104,12 @@ will get a dated section here that doubles as its release notes.
 
 ### Fixed
 
+- Branch, alias source title, archive state, and (opt-in) touched-file paths are
+  now also part of each item's Spotlight description: the macOS 26 Spotlight UI
+  matches app-entity results on title and description only and ignores
+  keywords, so branch/file searches previously worked in CSUserQuery but not in
+  the Spotlight window. Session IDs stay keyword-only (never shown in the
+  snippet). Existing items are re-donated once (donation generation v5).
 - Spotlight results no longer show a blank placeholder: each session now
   carries its agent's desktop-app icon (resolved at runtime, falling back to
   Spotion's own icon), kept fresh when handler apps are installed, removed, or
