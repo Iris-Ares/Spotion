@@ -39,6 +39,10 @@ will get a dated section here that doubles as its release notes.
 - Find a session by pasting its exact session ID into Spotlight; `codex:<id>` /
   `claude:<id>` narrow the match to one agent
   ([#52](https://github.com/Iris-Ares/Spotion/pull/52)).
+- *Continue Latest Codex Session* / *Continue Latest Claude Session* Spotlight
+  actions: resume the newest session of one agent, optionally scoped to a project,
+  chosen from Spotion's own index rather than the CLI's implicit `--last`
+  ([#50](https://github.com/Iris-Ares/Spotion/pull/50)).
 
 ### Fixed
 
