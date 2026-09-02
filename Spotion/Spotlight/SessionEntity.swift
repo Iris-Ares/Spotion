@@ -7,6 +7,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
 
     var id: String
     var sessionID: String
+    var isPinned: Bool
     var title: String
     var projectName: String
     var cwd: String
@@ -21,6 +22,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         let record = titled.record
         self.id = record.id
         self.sessionID = record.sessionID
+        self.isPinned = titled.isPinned
         self.title = titled.title
         self.projectName = record.projectName
         self.cwd = record.cwd
@@ -47,6 +49,10 @@ struct SessionEntity: AppEntity, IndexedEntity {
             subtitle: "\(agent.displayName) · \(projectName)",
             image: image
         )
+    }
+
+    var donationPriority: Int {
+        SessionDonationPriority.value(isPinned: isPinned)
     }
 
     var attributeSet: CSSearchableItemAttributeSet {
