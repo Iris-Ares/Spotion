@@ -2163,4 +2163,33 @@ import Testing
         #expect(deferred.deletedIDs.isEmpty)
         #expect(await store.record(id: "codex:\(CodexScannerTests.uuid)")?.isArchived == true)
     }
+
+    @Test func contentDescriptionRepeatsSearchableMetadataButNeverIDs() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(extra: ",\"git\":{\"branch\":\"feature/ui-match\"}"),
+                CodexScannerTests.userMessage("first prompt"),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        let store = makeStore(env)
+        await store.bootstrap()
+        let record = try #require(await store.refresh(enabledAgents: [.codex]).upserts.first)
+
+        let plain = record.spotlightContentDescription(includeLaterPrompts: false)
+        #expect(plain.contains("feature/ui-match"))
+        #expect(!plain.contains(record.sessionID))
+        #expect(!plain.contains("Archived"))
+
+        let aliased = record.spotlightContentDescription(includeLaterPrompts: false, sourceTitle: "Agent title")
+        #expect(aliased.contains("Agent title"))
+
+        var archived = record
+        archived.isArchived = true
+        archived.touchedFilePaths = ["Sources/App.swift"]
+        #expect(archived.spotlightContentDescription(includeLaterPrompts: false).contains("Archived"))
+        #expect(!archived.spotlightContentDescription(includeLaterPrompts: false).contains("Sources/App.swift"))
+        #expect(archived.spotlightContentDescription(includeLaterPrompts: false, includeTouchedFiles: true)
+            .contains("Sources/App.swift"))
+    }
 }
