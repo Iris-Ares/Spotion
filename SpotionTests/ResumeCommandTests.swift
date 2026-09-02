@@ -15,12 +15,16 @@ struct ResumeCommandTests {
     private func record(
         agent: AgentKind,
         sessionID: String = "37820960-9057-4bd4-9c9f-47cfa12b9bf0",
-        cwd: String = "/tmp"
+        cwd: String = "/tmp",
+        home: String? = nil,
+        isDefaultHome: Bool = true
     ) -> SessionRecord {
         SessionRecord(
             id: SessionRecord.makeID(agent: agent, sessionID: sessionID),
             agent: agent,
             sessionID: sessionID,
+            agentHomePath: home,
+            isDefaultAgentHome: isDefaultHome,
             fallbackTitle: "Test session",
             firstPrompt: nil,
             laterPromptSnippets: [],
@@ -104,6 +108,22 @@ struct ResumeCommandTests {
 
         #expect(copied == launched)
         #expect(copied == "cd '/tmp' && exec '/opt/homebrew/bin/codex' --cd '/tmp' resume '37820960-9057-4bd4-9c9f-47cfa12b9bf0'")
+        #expect(clipboard.writes == [copied])
+    }
+
+    @MainActor
+    @Test
+    func copyPreservesAdditionalHomeEnvironment() throws {
+        let launcher = TerminalLauncher(resolver: resolver(executables: ["/opt/homebrew/bin/codex"]))
+        let clipboard = ClipboardSpy()
+        let session = record(
+            agent: .codex,
+            home: "/tmp/Codex work",
+            isDefaultHome: false)
+
+        let copied = try ResumeCommandCopier(launcher: launcher).copy(session, to: clipboard)
+
+        #expect(copied.contains("exec env 'CODEX_HOME=/tmp/Codex work' '/opt/homebrew/bin/codex'"))
         #expect(clipboard.writes == [copied])
     }
 

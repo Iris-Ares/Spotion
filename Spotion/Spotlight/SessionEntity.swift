@@ -78,6 +78,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
             includeLaterPrompts: SpotionSettings.searchLaterPrompts,
             gitBranch: gitBranch,
             sourceTitle: sourceTitle == title ? nil : sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             isArchived: isArchived,
             touchedFilePaths: SpotionSettings.searchTouchedFiles ? touchedFilePaths : []
         )

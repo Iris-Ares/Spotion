@@ -17,7 +17,7 @@ struct ClaudeScanner: SessionScanner {
     let isDefaultAgentHome: Bool
     let projectsRoot: URL
 
-    var rootPath: String { projectsRoot.path }
+    let rootPath: String
     var agentHomePath: String { agentHome.path }
 
     init(
@@ -27,6 +27,9 @@ struct ClaudeScanner: SessionScanner {
         self.agentHome = claudeHome.standardizedFileURL
         self.isDefaultAgentHome = isDefaultAgentHome
         self.projectsRoot = claudeHome.appendingPathComponent("projects")
+        let canonicalRoot = try? self.projectsRoot
+            .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
+        self.rootPath = canonicalRoot.flatMap { $0.isEmpty ? nil : $0 } ?? self.projectsRoot.path
     }
 
     func enumerateFiles() -> [ScannedFile]? {

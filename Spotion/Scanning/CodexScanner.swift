@@ -32,7 +32,7 @@ struct CodexScanner: SessionScanner {
     let indexURL: URL
     let source: CodexSessionSource
 
-    var rootPath: String { sessionsRoot.path }
+    let rootPath: String
     var agentHomePath: String { agentHome.path }
 
     init(
@@ -45,6 +45,9 @@ struct CodexScanner: SessionScanner {
         self.source = source
         self.sessionsRoot = self.agentHome.appendingPathComponent(source.directoryName)
         self.indexURL = self.agentHome.appendingPathComponent("session_index.jsonl")
+        let canonicalRoot = try? self.sessionsRoot
+            .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
+        self.rootPath = canonicalRoot.flatMap { $0.isEmpty ? nil : $0 } ?? self.sessionsRoot.path
     }
 
     func enumerateFiles() -> [ScannedFile]? {

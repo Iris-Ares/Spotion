@@ -70,6 +70,14 @@ import Testing
         #expect(NativeAppSourcePolicy.unsupportedReason(for: defaultHome) == nil)
     }
 
+    @Test func additionalHomeContextIsSearchableAndVisible() {
+        let additional = makeRecord(home: "/tmp/work-codex", isDefault: false)
+
+        #expect(additional.spotlightKeywords().contains("/tmp/work-codex"))
+        #expect(additional.spotlightContentDescription(includeLaterPrompts: false)
+            .contains("/tmp/work-codex"))
+    }
+
     private func makeRecord(home: String, isDefault: Bool) -> SessionRecord {
         SessionRecord(
             id: SessionRecord.makeID(

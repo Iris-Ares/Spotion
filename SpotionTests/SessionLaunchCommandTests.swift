@@ -105,15 +105,16 @@ import Testing
             cwd: "/tmp/project's work",
             home: "/tmp/-work profile's Codex",
             isDefaultHome: false)
-        let executable = "env 'CODEX_HOME=/tmp/-work profile'\''s Codex' '/Applications/Agent Tools/codex'"
+        let executable = "env \(ShellQuoting.posixQuoted("CODEX_HOME=/tmp/-work profile's Codex")) \(ShellQuoting.posixQuoted("/Applications/Agent Tools/codex"))"
+        let cwd = ShellQuoting.posixQuoted(source.cwd)
 
         let resume = try SessionLaunchCommand.resume(
             source, binary: "/Applications/Agent Tools/codex", existingDirectory: source.cwd)
         let fork = try SessionLaunchCommand.fork(
             source, binary: "/Applications/Agent Tools/codex", existingDirectory: source.cwd)
 
-        #expect(resume.contains("exec \(executable) --cd '/tmp/project'\''s work' resume"))
-        #expect(fork.contains("exec \(executable) --cd '/tmp/project'\''s work' fork --"))
+        #expect(resume.contains("exec \(executable) --cd \(cwd) resume"))
+        #expect(fork.contains("exec \(executable) --cd \(cwd) fork --"))
         #expect(!resume.contains("export CODEX_HOME"))
     }
 
