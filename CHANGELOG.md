@@ -4,40 +4,28 @@ All notable changes to Spotion are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Until the first tagged release, everything lives under *Unreleased*; once GitHub
-Releases exist ([#5](https://github.com/Iris-Ares/Spotion/issues/5)), each release
-will get a dated section here that doubles as its release notes.
+Each release gets a dated section here that doubles as its GitHub Release notes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-09-02
+
 ### Added
 
-- Spotlight indexing of Codex CLI (`~/.codex`) and Claude Code (`~/.claude`)
-  sessions as App Entities in a named CoreSpotlight index, searchable by title,
-  first prompt, project, directory, and git branch
-  ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
-- Resume-in-terminal on <kbd>⏎</kbd>: `codex resume` / `claude --resume` in
-  Terminal.app or Ghostty, `cd`-ed to the session's working directory
-  ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
-- Quick Create Spotlight actions (*New Codex Session* / *New Claude Session*)
-  with inline prompt and project picker ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
-- Menu-bar app with recent sessions, index statistics, rescan/rebuild actions,
-  scan-report copy, first-run welcome window, and Settings (agent toggles,
-  terminal choice, binary-path overrides, launch at login, index self-check)
-  ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
-- File watching of both agents' data directories with incremental index
-  refreshes and an hourly reconcile ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
-- Per-agent launch preference: open sessions in the terminal CLI or in the
-  agent's desktop app via `codex://` / `claude://` deep links
-  ([#6](https://github.com/Iris-Ares/Spotion/pull/6)).
-- Liquid Glass app icon and matching menu-bar icon
-  ([#7](https://github.com/Iris-Ares/Spotion/pull/7)).
 - Homebrew install via `brew install --cask Iris-Ares/tap/spotion`, served from the
   [Iris-Ares/homebrew-tap](https://github.com/Iris-Ares/homebrew-tap) repository;
   the release workflow bumps the cask automatically on every tag
   ([#16](https://github.com/Iris-Ares/Spotion/pull/16)).
-- Find a session by pasting its exact session ID into Spotlight; `codex:<id>` /
-  `claude:<id>` narrow the match to one agent
+- Off-by-default *Search later prompts* (Settings → Index): up to five recent
+  user prompts per session are donated to the local Spotlight index; assistant,
+  tool, thinking, and attachment content is never indexed
+  ([#18](https://github.com/Iris-Ares/Spotion/pull/18)).
+- Find a session by its exact session ID (`codex:<id>` / `claude:<id>` narrow the
+  match to one agent) when picking a session in a Spotlight action or in
+  Shortcuts. The Spotlight window itself matches titles and descriptions only on
+  macOS 26, so a pasted UUID does not surface there
   ([#52](https://github.com/Iris-Ares/Spotion/pull/52)).
 - *Continue Latest Codex Session* / *Continue Latest Claude Session* Spotlight
   actions: resume the newest session of one agent, optionally scoped to a project,
@@ -102,6 +90,17 @@ will get a dated section here that doubles as its release notes.
   records always win an active/archive ID conflict
   ([#39](https://github.com/Iris-Ares/Spotion/pull/39)).
 
+### Changed
+
+- The scan cache advances to v8 and the donated-content generation to v5, so the
+  first launch after updating rebuilds the Spotlight index once (a minute or so
+  for a few thousand sessions).
+- macOS allows at most ten App Shortcuts per app and Spotion is at that cap:
+  *Fork Agent Session*, *Copy Session Resume Command*, and *Resume Claude Session
+  from Pull Request* are Spotlight actions without a Siri phrase.
+- Opening an archived Codex session requires Codex CLI 0.136 or newer
+  (`codex unarchive`).
+
 ### Fixed
 
 - Branch, alias source title, archive state, and (opt-in) touched-file paths are
@@ -109,10 +108,44 @@ will get a dated section here that doubles as its release notes.
   matches app-entity results on title and description only and ignores
   keywords, so branch/file searches previously worked in CSUserQuery but not in
   the Spotlight window. Session IDs stay keyword-only (never shown in the
-  snippet). Existing items are re-donated once (donation generation v5).
+  snippet). Existing items are re-donated once (donation generation v5)
+  ([#54](https://github.com/Iris-Ares/Spotion/pull/54)).
+
+## [0.2.0] - 2026-08-07
+
+### Added
+
+- Spotlight indexing of Codex CLI (`~/.codex`) and Claude Code (`~/.claude`)
+  sessions as App Entities in a named CoreSpotlight index, searchable by title,
+  first prompt, project, directory, and git branch
+  ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
+- Resume-in-terminal on <kbd>⏎</kbd>: `codex resume` / `claude --resume` in
+  Terminal.app or Ghostty, `cd`-ed to the session's working directory
+  ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
+- Quick Create Spotlight actions (*New Codex Session* / *New Claude Session*)
+  with inline prompt and project picker ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
+- Menu-bar app with recent sessions, index statistics, rescan/rebuild actions,
+  scan-report copy, first-run welcome window, and Settings (agent toggles,
+  terminal choice, binary-path overrides, launch at login, index self-check)
+  ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
+- File watching of both agents' data directories with incremental index
+  refreshes and an hourly reconcile ([#1](https://github.com/Iris-Ares/Spotion/pull/1)).
+- Per-agent launch preference: open sessions in the terminal CLI or in the
+  agent's desktop app via `codex://` / `claude://` deep links
+  ([#6](https://github.com/Iris-Ares/Spotion/pull/6)).
+- Liquid Glass app icon and matching menu-bar icon
+  ([#7](https://github.com/Iris-Ares/Spotion/pull/7)).
+- GitHub Releases pipeline: pushing a `vX.Y.Z` tag builds, packages, signs the
+  Sparkle appcast, and publishes the release; the app checks for updates and
+  installs them in place ([#12](https://github.com/Iris-Ares/Spotion/pull/12)).
+
+### Fixed
+
 - Spotlight results no longer show a blank placeholder: each session now
   carries its agent's desktop-app icon (resolved at runtime, falling back to
   Spotion's own icon), kept fresh when handler apps are installed, removed, or
   updated ([#10](https://github.com/Iris-Ares/Spotion/pull/10)).
 
-[Unreleased]: https://github.com/Iris-Ares/Spotion/commits/main
+[Unreleased]: https://github.com/Iris-Ares/Spotion/compare/v0.3.0...main
+[0.3.0]: https://github.com/Iris-Ares/Spotion/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/Iris-Ares/Spotion/releases/tag/v0.2.0
