@@ -9,10 +9,10 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
-    /// v7: Codex git branch; v6: later prompt preference and hydration state;
-    /// v5: iconSources; v4: pendingGhostDeletions; v3: dirtyIDs;
-    /// v2: head expansion
-    static let currentVersion = 7
+    /// v8: touched-file hydration state; v7: Codex git branch; v6: later prompt
+    /// preference and hydration state; v5: iconSources; v4: pendingGhostDeletions;
+    /// v3: dirtyIDs; v2: head expansion
+    static let currentVersion = 8
 
     var version: Int = currentVersion
     /// key = absolute session file path
@@ -41,6 +41,11 @@ struct ScanCache: Codable, Sendable {
     /// Unchanged transcript paths still awaiting the opt-in reparse. A failed
     /// read or root enumeration leaves the path here for a later retry.
     var laterPromptPendingPaths: Set<String> = []
+    /// 0 means touched-file indexing is disabled. A positive generation
+    /// changes when allowlisted tool schemas or normalization behavior changes.
+    var touchedFileExtractionGeneration = 0
+    /// Unchanged transcript paths awaiting bounded touched-file hydration.
+    var touchedFilePendingPaths: Set<String> = []
 }
 
 enum DonatedContentGeneration {

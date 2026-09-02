@@ -16,6 +16,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var agent: AgentKind
     var firstPromptSnippet: String?
     var laterPromptSnippets: [String]
+    var touchedFilePaths: [String]
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
@@ -32,6 +33,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.agent = record.agent
         self.firstPromptSnippet = record.firstPrompt
         self.laterPromptSnippets = record.laterPromptSnippets
+        self.touchedFilePaths = record.touchedFilePaths
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
@@ -74,7 +76,9 @@ struct SessionEntity: AppEntity, IndexedEntity {
             id: id,
             gitBranch: gitBranch,
             cwd: cwd,
-            sourceTitle: sourceTitle == title ? nil : sourceTitle
+            sourceTitle: sourceTitle == title ? nil : sourceTitle,
+            touchedFilePaths: touchedFilePaths,
+            includeTouchedFiles: SpotionSettings.searchTouchedFiles
         )
         attributes.contentCreationDate = startedAt
         attributes.contentModificationDate = lastActivityAt

@@ -74,6 +74,12 @@ will get a dated section here that doubles as its release notes.
   before recent-session projects — so a brand-new project is one keystroke away.
   Missing folders stay listed but are never suggested; excluded projects never
   appear ([#31](https://github.com/Iris-Ares/Spotion/pull/31)).
+- Off-by-default *Search files touched* (Settings → Index): find a session by a
+  file it read or edited. Only explicit paths from recognized Read/Write/Edit
+  tool inputs inside the session's project are donated (newest 20, transient,
+  never written to the scan cache); shell commands, patches, prose, and tool
+  output are ignored. The scan cache advances to v8
+  ([#38](https://github.com/Iris-Ares/Spotion/pull/38)).
 
 ### Fixed
 

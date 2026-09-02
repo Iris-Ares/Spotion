@@ -263,6 +263,7 @@ private struct IndexSettingsTab: View {
     private var state = AppCoordinator.shared.uiState
     @State private var searchLaterPrompts = SpotionSettings.searchLaterPrompts
     @State private var historyWindow = SpotionSettings.spotlightHistoryWindow
+    @State private var searchTouchedFiles = SpotionSettings.searchTouchedFiles
     @State private var checkTerm = ""
     @State private var checkResult: String?
 
@@ -287,6 +288,14 @@ private struct IndexSettingsTab: View {
                         Task { await AppCoordinator.shared.refreshAndApply() }
                     }
                 Text("Off by default. When enabled, up to five recent user prompts per session are stored only in the local macOS Spotlight index. Assistant, tool, thinking, command-wrapper, sidechain, and attachment content is excluded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Search files touched", isOn: $searchTouchedFiles)
+                    .onChange(of: searchTouchedFiles) {
+                        SpotionSettings.searchTouchedFiles = searchTouchedFiles
+                        Task { await AppCoordinator.shared.refreshAndApply() }
+                    }
+                Text("Off by default. Extracts only a bounded set of project-relative paths from recognized Read, Write, and Edit tool inputs. Shell commands, patches, prose, tool output, attachments, and paths outside the session project are never indexed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

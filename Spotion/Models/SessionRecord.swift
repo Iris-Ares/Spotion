@@ -15,6 +15,17 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     /// transient runtime state: CodingKeys deliberately omit it so prompt text
     /// is donated to Spotlight without entering Spotion's persisted scan cache.
     var laterPromptSnippets: [String]
+    /// Opt-in, bounded project-relative paths extracted only from allowlisted
+    /// structured file-tool inputs. Like later prompts these are transient and
+    /// deliberately omitted from CodingKeys.
+    var touchedFilePaths: [String]
+    /// The explicit source cwd used to normalize tool paths. This remains nil
+    /// when Codex metadata omitted cwd, preventing a fallback home directory
+    /// from being mistaken for trustworthy project provenance.
+    var touchedFileBasePath: String?
+    /// Transient proof that this in-memory record was parsed with the current
+    /// touched-file extraction generation, even when no eligible path existed.
+    var touchedFileHydrationGeneration: Int
     var cwd: String
     var projectName: String
     var gitBranch: String?
@@ -36,6 +47,9 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         fallbackTitle: String?,
         firstPrompt: String?,
         laterPromptSnippets: [String],
+        touchedFilePaths: [String] = [],
+        touchedFileBasePath: String? = nil,
+        touchedFileHydrationGeneration: Int = 0,
         cwd: String,
         projectName: String,
         gitBranch: String?,
@@ -50,6 +64,9 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         self.fallbackTitle = fallbackTitle
         self.firstPrompt = firstPrompt
         self.laterPromptSnippets = laterPromptSnippets
+        self.touchedFilePaths = touchedFilePaths
+        self.touchedFileBasePath = touchedFileBasePath
+        self.touchedFileHydrationGeneration = touchedFileHydrationGeneration
         self.cwd = cwd
         self.projectName = projectName
         self.gitBranch = gitBranch
@@ -67,6 +84,9 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         fallbackTitle = try values.decodeIfPresent(String.self, forKey: .fallbackTitle)
         firstPrompt = try values.decodeIfPresent(String.self, forKey: .firstPrompt)
         laterPromptSnippets = []
+        touchedFilePaths = []
+        touchedFileBasePath = nil
+        touchedFileHydrationGeneration = 0
         cwd = try values.decode(String.self, forKey: .cwd)
         projectName = try values.decode(String.self, forKey: .projectName)
         gitBranch = try values.decodeIfPresent(String.self, forKey: .gitBranch)
@@ -96,7 +116,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         "\(agent.rawValue):\(sessionID)"
     }
 
-    func spotlightKeywords(sourceTitle: String? = nil) -> [String] {
+    func spotlightKeywords(sourceTitle: String? = nil, includeTouchedFiles: Bool = false) -> [String] {
         Self.spotlightKeywords(
             projectName: projectName,
             agent: agent,
@@ -104,7 +124,9 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
             id: id,
             gitBranch: gitBranch,
             cwd: cwd,
-            sourceTitle: sourceTitle
+            sourceTitle: sourceTitle,
+            touchedFilePaths: touchedFilePaths,
+            includeTouchedFiles: includeTouchedFiles
         )
     }
 
@@ -115,7 +137,9 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         id: String,
         gitBranch: String?,
         cwd: String,
-        sourceTitle: String? = nil
+        sourceTitle: String? = nil,
+        touchedFilePaths: [String] = [],
+        includeTouchedFiles: Bool = false
     ) -> [String] {
         // The agent-derived title stays searchable when a Spotion alias
         // replaces the visible title.
@@ -124,6 +148,12 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         if let gitBranch { candidates.append(gitBranch) }
         candidates += cwd.split(separator: "/").map(String.init)
         candidates += [sessionID, id]
+        if includeTouchedFiles {
+            for path in touchedFilePaths {
+                candidates.append(path)
+                candidates.append((path as NSString).lastPathComponent)
+            }
+        }
 
         var seen = Set<String>()
         return candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
@@ -148,6 +178,89 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         if includeLaterPrompts { parts.append(contentsOf: laterPrompts.map(Optional.some)) }
         parts.append(cwd)
         return parts.compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+enum TouchedFilePolicy {
+    /// Bump when allowlisted schemas or normalization semantics change. The
+    /// store persists this generation and rehydrates unchanged transcripts
+    /// once while the preference is enabled.
+    static let extractionGeneration = 1
+    static let tailReadCap = 512 * 1024
+    static let maximumCount = 20
+    static let maximumDonatedLength = 2_000
+
+    /// Lexically normalize an explicit tool path into a project-relative path.
+    /// No project file is opened, statted, crawled, or symlink-resolved.
+    static func normalize(
+        _ rawPath: String,
+        relativeTo cwd: String,
+        caseSensitive: Bool
+    ) -> String? {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.hasSuffix("/"),
+              !trimmed.hasSuffix("\\"),
+              !trimmed.hasPrefix("~"),
+              !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { return nil }
+
+        let base = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL.path
+        guard base.hasPrefix("/") else { return nil }
+        let absolute: String
+        if trimmed.hasPrefix("/") {
+            absolute = URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        } else {
+            absolute = URL(fileURLWithPath: trimmed, relativeTo: URL(fileURLWithPath: base, isDirectory: true))
+                .standardizedFileURL.path
+        }
+
+        let comparisonBase = caseSensitive ? base : base.lowercased()
+        let comparisonPath = caseSensitive ? absolute : absolute.lowercased()
+        let prefix = comparisonBase == "/" ? "/" : comparisonBase + "/"
+        guard comparisonPath.hasPrefix(prefix), comparisonPath != comparisonBase else { return nil }
+
+        let relativeStart = absolute.index(absolute.startIndex, offsetBy: base == "/" ? 1 : base.count + 1)
+        let relative = String(absolute[relativeStart...])
+        guard !relative.isEmpty,
+              relative != ".",
+              (relative as NSString).lastPathComponent != ".",
+              (relative as NSString).lastPathComponent != ".."
+        else { return nil }
+        return relative
+    }
+
+    /// Inputs are chronological; output is newest-first with the newest
+    /// spelling winning case-insensitive duplicates.
+    static func mostRecent(
+        _ rawPaths: [String],
+        relativeTo cwd: String,
+        caseSensitive: Bool
+    ) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        var donatedLength = 0
+
+        for rawPath in rawPaths.reversed() {
+            guard result.count < maximumCount,
+                  let relative = normalize(rawPath, relativeTo: cwd, caseSensitive: caseSensitive)
+            else { continue }
+            let key = caseSensitive ? relative : relative.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            let basename = (relative as NSString).lastPathComponent
+            let contribution = relative.count + (basename == relative ? 0 : 1 + basename.count)
+            let separator = result.isEmpty ? 0 : 1
+            guard donatedLength + separator + contribution <= maximumDonatedLength else { continue }
+            result.append(relative)
+            donatedLength += separator + contribution
+        }
+        return result
+    }
+
+    static func volumeIsCaseSensitive(at path: String) -> Bool {
+        (try? URL(fileURLWithPath: path).resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]
+        ).volumeSupportsCaseSensitiveNames) ?? true
     }
 }
 
