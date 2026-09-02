@@ -65,10 +65,30 @@ final class TerminalLauncher: Sendable {
         try await launch(shellCommand: command)
     }
 
+    /// `claude --from-pr <n>`: Claude Code owns the PR → session lookup; Spotion
+    /// only validates the reference and the project directory. Terminal-only.
+    @discardableResult
+    func resumeClaude(fromPullRequest rawReference: String, cwd: String) async throws -> String {
+        let plan = try ClaudePullRequestResumePlan.make(
+            rawReference: rawReference,
+            cwd: cwd,
+            claudeEnabled: SpotionSettings.enabledAgents.contains(.claude),
+            terminal: SpotionSettings.terminal,
+            resolveBinary: { try self.resolver.resolve(.claude) },
+            directoryExists: { self.existingDirectory($0) != nil }
+        )
+        try await launch(shellCommand: plan.shellCommand, terminal: plan.terminal)
+        return plan.normalizedReference
+    }
+
     // MARK: - Terminal dispatch
 
     private func launch(shellCommand: String) async throws {
-        switch SpotionSettings.terminal {
+        try await launch(shellCommand: shellCommand, terminal: SpotionSettings.terminal)
+    }
+
+    private func launch(shellCommand: String, terminal: TerminalApp) async throws {
+        switch terminal {
         case .terminal:
             try await launchInTerminalApp(shellCommand)
         case .ghostty:
