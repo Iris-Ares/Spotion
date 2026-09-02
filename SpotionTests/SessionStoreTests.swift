@@ -937,6 +937,8 @@ import Testing
         }
         #expect(restoreFailed)
         #expect(await store.hiddenSessionSnapshots().map(\.id) == [id])
+    }
+
     @Test func historyWindowTargetsDiffsAndFiltersSessionQueriesWithoutRemovingCache() async throws {
         let env = try makeEnv()
         try writeCodexSession(env, title: "Old Codex title")
