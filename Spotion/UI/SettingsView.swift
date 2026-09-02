@@ -148,6 +148,8 @@ private struct AdvancedSettingsTab: View {
     @State private var codexPath = SpotionSettings.codexPathOverride ?? ""
     @State private var claudePath = SpotionSettings.claudePathOverride ?? ""
     @State private var defaultDir = SpotionSettings.defaultNewSessionDir
+    @State private var savedProjects: [SavedProject] = []
+    @State private var savedProjectMessage: String?
 
     var body: some View {
         Form {
@@ -161,8 +163,99 @@ private struct AdvancedSettingsTab: View {
                 TextField("目录", text: $defaultDir)
                     .onChange(of: defaultDir) { SpotionSettings.defaultNewSessionDir = defaultDir }
             }
+            Section("Saved Quick Create projects") {
+                if savedProjects.isEmpty {
+                    Text("No saved projects")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(Array(savedProjects.enumerated()), id: \.element.id) { index, project in
+                    HStack {
+                        Image(systemName: project.isAvailable ? "folder" : "exclamationmark.triangle")
+                            .foregroundStyle(project.isAvailable ? Color.secondary : Color.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(project.name)
+                            Text(project.path)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            if !project.isAvailable {
+                                Text("Unavailable — Quick Create will not fall back to another directory")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            moveSavedProject(from: index, to: index - 1)
+                        } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(index == 0)
+                        .help("Move up")
+                        Button {
+                            moveSavedProject(from: index, to: index + 1)
+                        } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(index == savedProjects.count - 1)
+                        .help("Move down")
+                        Button(role: .destructive) {
+                            removeSavedProject(project.path)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove saved project")
+                    }
+                }
+                Button("Add Folder…") { chooseSavedProject() }
+                Text("Saved folders appear first for both Codex and Claude Quick Create. Removing one does not delete files or indexed sessions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let savedProjectMessage {
+                    Text(savedProjectMessage)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
         }
         .formStyle(.grouped)
+        .onAppear { reloadSavedProjects() }
+    }
+
+    private func chooseSavedProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Save Project"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        perform { try AppCoordinator.shared.addSavedProject(path: url.path) }
+    }
+
+    private func removeSavedProject(_ path: String) {
+        perform { try AppCoordinator.shared.removeSavedProject(path: path) }
+    }
+
+    private func moveSavedProject(from source: Int, to destination: Int) {
+        perform { try AppCoordinator.shared.moveSavedProject(from: source, to: destination) }
+    }
+
+    private func perform(_ action: () throws -> Void) {
+        do {
+            try action()
+            reloadSavedProjects()
+        } catch {
+            savedProjectMessage = error.localizedDescription
+        }
+    }
+
+    private func reloadSavedProjects() {
+        savedProjects = AppCoordinator.shared.savedProjects()
+        savedProjectMessage = AppCoordinator.shared.savedProjectStorageWarning()
     }
 }
 

@@ -55,6 +55,13 @@ enum ProjectPathPolicy {
         return true
     }
 
+    /// Dedupe key: the standardized path, case-folded when its volume ignores
+    /// case. Cheaper than pairwise `sameDirectory` over a long list.
+    static func comparisonKey(for rawPath: String) -> String? {
+        guard let path = standardized(rawPath) else { return nil }
+        return volumeIsCaseSensitive(at: path) ? path : path.folding(options: [.caseInsensitive], locale: nil)
+    }
+
     static func sameDirectory(_ lhs: String, _ rhs: String) -> Bool {
         contains(root: lhs, candidate: rhs) && contains(root: rhs, candidate: lhs)
     }

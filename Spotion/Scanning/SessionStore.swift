@@ -819,6 +819,10 @@ actor SessionStore {
         projectExclusions.exclusions()
     }
 
+    func projectIsExcluded(cwd: String) -> Bool {
+        projectExclusions.excludes(cwd: cwd)
+    }
+
     func scanReport() -> String {
         var lines = [
             "Spotion scan report",
