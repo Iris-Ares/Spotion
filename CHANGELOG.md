@@ -95,6 +95,12 @@ will get a dated section here that doubles as its release notes.
   and runs `claude --from-pr <n>` in that directory and your terminal, leaving
   the linked-session lookup to Claude Code
   ([#53](https://github.com/Iris-Ares/Spotion/pull/53)).
+- Off-by-default *Include archived Codex sessions* (Settings → Index): sessions in
+  `~/.codex/archived_sessions` become searchable with a visible **Archived**
+  label; opening one asks first, runs `codex unarchive <id>` directly (Codex CLI
+  0.136 or newer), verifies the active rollout, and only then resumes it. Active
+  records always win an active/archive ID conflict
+  ([#39](https://github.com/Iris-Ares/Spotion/pull/39)).
 
 ### Fixed
 

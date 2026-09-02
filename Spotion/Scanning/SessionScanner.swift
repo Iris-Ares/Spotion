@@ -1,5 +1,16 @@
 import Foundation
 
+enum SessionWatchPaths {
+    static func all(home: URL) -> [String] {
+        [
+            home.appendingPathComponent(".codex/sessions").path,
+            home.appendingPathComponent(".codex/archived_sessions").path,
+            home.appendingPathComponent(".codex/session_index.jsonl").path,
+            home.appendingPathComponent(".claude/projects").path,
+        ]
+    }
+}
+
 struct ScannedFile: Sendable, Hashable {
     var path: String
     var mtime: Date

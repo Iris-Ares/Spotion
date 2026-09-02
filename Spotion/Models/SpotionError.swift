@@ -9,6 +9,7 @@ enum SpotionError: LocalizedError, Sendable {
     /// confirm; the durable dirty/indexed pipeline retries it.
     case indexMutationPending(String)
     case hiddenSessionSourceUnavailable(String)
+    case unarchiveCancelled
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +24,7 @@ enum SpotionError: LocalizedError, Sendable {
             "\(action) 已安全记录，但 Spotlight 尚未确认更新；Spotion 会在下次刷新和重启后继续重试。"
         case .hiddenSessionSourceUnavailable(let id):
             "该隐藏会话的源文件当前不可用，暂时无法恢复：\(id)"
+        case .unarchiveCancelled: "已取消；Codex 会话仍保持归档状态。"
         }
     }
 }

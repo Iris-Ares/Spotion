@@ -292,6 +292,50 @@ import Testing
         #expect(scanner.enumerateFiles()?.isEmpty == true)
     }
 
+    @Test func archivedSourceUsesSameBoundedParserAndStableIdentifier() throws {
+        let rel = "archived_sessions/rollout-2026-08-05T18-08-52-\(Self.uuid).jsonl"
+        let home = try makeHome(sessionLines: [
+            Self.meta(),
+            Self.userMessage("first archived prompt"),
+            Self.userMessage("distinctive later archived prompt"),
+        ], rel: rel)
+        let scanner = CodexScanner(codexHome: home, source: .archived)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
+
+        #expect(record.id == "codex:\(Self.uuid)")
+        #expect(record.isArchived)
+        #expect(record.firstPrompt == "first archived prompt")
+        #expect(record.laterPromptSnippets == ["distinctive later archived prompt"])
+    }
+
+    @Test func archivedSourceRejectsMalformedRollout() throws {
+        let rel = "archived_sessions/rollout-2026-08-05T18-08-52-\(Self.uuid).jsonl"
+        let home = try makeHome(sessionLines: ["not json", Self.userMessage("no metadata")], rel: rel)
+        let scanner = CodexScanner(codexHome: home, source: .archived)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        #expect(scanner.parse(file).record == nil)
+    }
+
+    @Test func watcherPathsIncludeBothCodexLifecycleRoots() {
+        let paths = SessionWatchPaths.all(home: URL(fileURLWithPath: "/Users/tester"))
+        #expect(paths.contains("/Users/tester/.codex/sessions"))
+        #expect(paths.contains("/Users/tester/.codex/archived_sessions"))
+        #expect(paths.contains("/Users/tester/.codex/session_index.jsonl"))
+    }
+
+    @Test func preFeatureCachedRecordDefaultsToActive() throws {
+        let home = try makeHome(sessionLines: [Self.meta(), Self.userMessage("legacy")])
+        let original = try firstRecord(home: home)
+        let encoded = try JSONEncoder().encode(original)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "isArchived")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(SessionRecord.self, from: legacy)
+        #expect(decoded.isArchived == false)
+        #expect(decoded.id == original.id)
+    }
+
     @Test func titleIndexLaterLineWins() throws {
         let home = try TestSupport.makeTempDir()
         let index = """
