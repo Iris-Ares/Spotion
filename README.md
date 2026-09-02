@@ -21,9 +21,11 @@ You run [Codex CLI](https://developers.openai.com/codex/cli) and [Claude Code](h
 
 ## Features
 
-- **Search every session** — by title, first prompt, project name, working directory, or git branch. Codex and Claude Code branch metadata is indexed when the local session provides it. An off-by-default privacy setting can also index recent project-relative file paths from recognized structured Read/Write/Edit tool inputs. Codex titles come from its own session index; Claude Code titles follow the same priority the CLI uses (custom title → AI title → last prompt → first message).
+- **Search every session** — by title, first prompt, project name, working directory, git branch, or exact session ID (`codex:<id>` / `claude:<id>` narrows to one agent). Codex and Claude Code branch metadata is indexed when the local session provides it. An off-by-default privacy setting can also index recent project-relative file paths from recognized structured Read/Write/Edit tool inputs. Codex titles come from its own session index; Claude Code titles follow the same priority the CLI uses (custom title → AI title → last prompt → first message).
 - **Resume with one keystroke** — <kbd>⏎</kbd> opens the session as `codex resume` / `claude --resume` in Terminal.app or [Ghostty](https://ghostty.org), after `cd`-ing to the session's original directory.
 - **Recover archived Codex work explicitly** — an off-by-default setting indexes `~/.codex/archived_sessions` with a visible **Archived** label. Opening one asks first, runs the resolved `codex` executable directly as `codex unarchive <id>`, verifies the active rollout, and only then resumes it.
+- **Organize without touching agent data** — pin important sessions (they get a Pinned section in the menu bar and stay searchable regardless of the history window), give any session a local alias while its original title stays searchable, hide single sessions, exclude whole project folders, or limit Spotlight to the last 7/30/90 days. All of it lives in Spotion's own sidecar files; transcripts are never edited.
+- **More one-keystroke actions** — *Continue Latest Codex/Claude Session* (optionally per project), *Fork Agent Session* (`codex fork` / `claude --fork-session`), *Copy Session Resume Command* (the exact command, POSIX-quoted, without opening a terminal), and *Resume Claude Session from Pull Request* (`claude --from-pr <n>`).
 - **Or hand off to the desktop app** — per agent, choose to open sessions in the Claude or ChatGPT (Codex) desktop apps instead, via `claude://` / `codex://` deep links.
 - **Quick Create from Spotlight** — run *New Codex Session* / *New Claude Session* actions right inside Spotlight (macOS 26 Spotlight Actions): type a prompt inline, optionally pick a recent project, hit <kbd>⏎</kbd>, and the session starts in your terminal.
 - **Always fresh** — a lightweight menu-bar app watches `~/.codex` and `~/.claude` for changes and keeps the index in sync, with an hourly reconcile as a safety net.
@@ -111,7 +113,7 @@ git pull && make install
 
 1. Press <kbd>⌘</kbd><kbd>Space</kbd> and type part of a session's title, project name, or directory.
 2. Select a result and press <kbd>⏎</kbd> — the session resumes in your terminal (or desktop app, if you've chosen that in Settings).
-3. To start something new, type "New Codex Session" or "New Claude Session", press <kbd>⇥</kbd>/<kbd>⏎</kbd> to expand the action, enter your prompt, optionally pick a *Project* (recent working directories are suggested), and press <kbd>⏎</kbd>.
+3. To start something new, type "New Codex Session" or "New Claude Session", press <kbd>⇥</kbd>/<kbd>⏎</kbd> to expand the action, enter your prompt, optionally pick a *Project* (saved folders first, then recent working directories), and press <kbd>⏎</kbd>.
 
 The menu-bar icon (a small ring) gives you the five most recent sessions, index statistics, *Rescan Now*, *Rebuild Spotlight Index*, a *Copy Scan Report* debugging helper, and Settings.
 
@@ -163,8 +165,8 @@ All preferences live in *Settings…* (via the menu-bar icon):
 | Tab | Options |
 |---|---|
 | **General** | Enable/disable indexing per agent · per-agent open-with (CLI / desktop app) · terminal choice (Terminal.app / Ghostty) · launch at login |
-| **Advanced** | Explicit `codex` / `claude` binary paths (when auto-detection can't find them) · default directory for Quick Create |
-| **Index** | Off-by-default later-prompt, touched-file, and archived-Codex search · session/archive/conflict counts, parse failures, last-index time · *Rescan* / *Rebuild Index* · a self-check that queries the index directly and tells you whether a search problem is in Spotion's index or in the Spotlight UI |
+| **Advanced** | Explicit `codex` / `claude` binary paths (when auto-detection can't find them) · default directory for Quick Create · saved Quick Create project folders |
+| **Index** | Spotlight history window (all / 7 / 30 / 90 days) · off-by-default later-prompt, touched-file, and archived-Codex search · hidden sessions (restore) · excluded project folders · session/archive/conflict counts, parse failures, last-index time · *Rescan* / *Rebuild Index* · a self-check that queries the index directly and tells you whether a search problem is in Spotion's index or in the Spotlight UI |
 
 ## Troubleshooting
 
@@ -184,6 +186,8 @@ All preferences live in *Settings…* (via the menu-bar icon):
 - Both agents' session-file formats are officially internal and version-unstable. Spotion parses defensively and skips what it can't read, but an agent update could temporarily break indexing until Spotion adapts.
 - Opening a session in Claude.app duplicates it into a desktop-managed copy and rewrites the local transcript ([see above](#launch-modes)).
 - Sessions whose IDs aren't canonical UUIDs can't be deep-linked to desktop apps.
+- Opening an archived Codex session runs `codex unarchive <id>`, which exists in Codex CLI 0.136 and newer; older CLIs report a visible error and the session stays archived.
+- macOS allows at most 10 App Shortcuts per app, and Spotion is at that cap. *Fork Agent Session*, *Copy Session Resume Command*, and *Resume Claude Session from Pull Request* are therefore available as Spotlight actions and in the Shortcuts app, but have no Siri phrase.
 - Parts of the UI are currently Chinese, parts English — localization is on the wish list, and contributions are welcome.
 
 ## Development
