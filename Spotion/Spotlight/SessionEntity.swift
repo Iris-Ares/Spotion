@@ -6,6 +6,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     static let defaultQuery = SessionEntityQuery()
 
     var id: String
+    var sessionID: String
     var title: String
     var projectName: String
     var cwd: String
@@ -19,6 +20,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     init(_ titled: TitledSession) {
         let record = titled.record
         self.id = record.id
+        self.sessionID = record.sessionID
         self.title = titled.title
         self.projectName = record.projectName
         self.cwd = record.cwd
@@ -56,10 +58,14 @@ struct SessionEntity: AppEntity, IndexedEntity {
             cwd: cwd,
             includeLaterPrompts: SpotionSettings.searchLaterPrompts
         )
-        var keywords = [projectName, agent.displayName, agent.rawValue, "session"]
-        if let gitBranch { keywords.append(gitBranch) }
-        keywords += cwd.split(separator: "/").map(String.init)
-        attributes.keywords = keywords
+        attributes.keywords = SessionRecord.spotlightKeywords(
+            projectName: projectName,
+            agent: agent,
+            sessionID: sessionID,
+            id: id,
+            gitBranch: gitBranch,
+            cwd: cwd
+        )
         attributes.contentCreationDate = startedAt
         attributes.contentModificationDate = lastActivityAt
         // Grouped by agent domain, enabling bulk deletion when an agent is disabled

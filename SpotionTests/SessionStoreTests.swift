@@ -136,6 +136,80 @@ import Testing
         #expect(stats.claudeCount == 1)
     }
 
+    @Test func exactSessionIDSearchAndKeywords() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+
+        let codexID = CodexScannerTests.uuid
+        let stableID = "codex:\(codexID)"
+        let rawMatches = await store.all(matching: codexID.uppercased())
+        #expect(rawMatches.map(\.id) == [stableID])
+        let prefixedMatches = await store.all(matching: stableID.uppercased())
+        #expect(prefixedMatches.map(\.id) == [stableID])
+        #expect(await store.all(matching: "claude:\(codexID)").isEmpty)
+        #expect(await store.all(matching: String(codexID.prefix(8))).isEmpty)
+        #expect(await store.all(matching: "00000000-0000-0000-0000-000000000000").isEmpty)
+
+        let record = try #require(await store.record(id: stableID))
+        #expect(record.sessionID == codexID)
+        let keywords = record.spotlightKeywords()
+        #expect(keywords.count(where: { $0 == codexID }) == 1)
+        #expect(keywords.count(where: { $0 == stableID }) == 1)
+        #expect(keywords.contains(record.projectName))
+        #expect(keywords.contains(record.agent.displayName))
+        #expect(keywords.contains(record.agent.rawValue))
+        #expect(keywords.contains("session"))
+        #expect(keywords.contains((record.cwd as NSString).lastPathComponent))
+        #expect(!record.spotlightContentDescription(includeLaterPrompts: true).contains(codexID))
+        #expect(!(await store.displayTitle(for: record)).contains(codexID))
+        #expect(!(await store.scanReport()).contains(codexID))
+    }
+
+    @Test func rawSessionIDSearchReturnsBothAgentsWhilePrefixDisambiguates() async throws {
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env, uuid: CodexScannerTests.uuid)
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        _ = await store.refresh(enabledAgents: both)
+
+        let rawID = CodexScannerTests.uuid
+        let rawMatches = Set(await store.all(matching: rawID).map(\.id))
+        #expect(rawMatches == ["codex:\(rawID)", "claude:\(rawID)"])
+        #expect(await store.all(matching: "codex:\(rawID)").map(\.id) == ["codex:\(rawID)"])
+        #expect(await store.all(matching: "claude:\(rawID)").map(\.id) == ["claude:\(rawID)"])
+    }
+
+    @Test func donatedContentGenerationRedonatesOnceAndRetries() async throws {
+        #expect(DonatedContentGeneration.requiresFullRebuild(stored: 3))
+        #expect(!DonatedContentGeneration.requiresFullRebuild(stored: DonatedContentGeneration.current))
+
+        let env = try makeEnv()
+        try writeCodexSession(env)
+        try writeClaudeSession(env)
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both)
+        let stableIDs = Set(initial.upserts.map(\.id))
+        await store.markIndexed(initial)
+        #expect(await store.refresh(enabledAgents: both).isEmpty)
+
+        await store.forgetIndexed()
+        let migration = await store.refresh(enabledAgents: both)
+        #expect(Set(migration.upserts.map(\.id)) == stableIDs)
+
+        let retry = await store.refresh(enabledAgents: both)
+        #expect(Set(retry.upserts.map(\.id)) == stableIDs)
+        await store.markIndexed(retry)
+        #expect(await store.refresh(enabledAgents: both).isEmpty)
+    }
+
     @Test func togglingLaterPromptSearchRedonatesOnceThenStabilizes() async throws {
         let env = try makeEnv()
         try TestSupport.write(
