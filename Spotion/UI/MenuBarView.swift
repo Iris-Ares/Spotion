@@ -65,9 +65,12 @@ struct MenuBarView: View {
     }
 
     private func menuTitle(_ item: TitledSession) -> String {
-        item.record.isArchived
-            ? "\(item.title) — Archived · \(item.record.projectName)"
-            : item.title
+        var labels: [String] = []
+        if item.record.isArchived { labels.append("Archived") }
+        if item.record.codexProvenance == .subagent { labels.append("Subagent") }
+        return labels.isEmpty
+            ? item.title
+            : "\(item.title) — \(labels.joined(separator: " · ")) · \(item.record.projectName)"
     }
 
     private func sessionButton(_ item: TitledSession) -> some View {
@@ -82,6 +85,10 @@ struct MenuBarView: View {
     private var statsLine: String {
         var line = "Codex \(state.codexCount) · Claude \(state.claudeCount)"
         if state.archivedCodexCount > 0 { line += " · Archived \(state.archivedCodexCount)" }
+        if state.codexSubagentCount > 0 { line += " · Subagents \(state.codexSubagentCount)" }
+        if state.codexUnrecognizedProvenanceCount > 0 {
+            line += " · Unrecognized \(state.codexUnrecognizedProvenanceCount)"
+        }
         if state.archiveConflicts > 0 { line += " · \(state.archiveConflicts) archive conflict" }
         if state.parseFailures > 0 { line += " · \(state.parseFailures) 个解析失败" }
         return line

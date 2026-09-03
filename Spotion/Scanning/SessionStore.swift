@@ -8,6 +8,9 @@ struct SessionDiff: Sendable {
 
 struct StoreStats: Sendable {
     var codexCount = 0
+    var codexTopLevelCount = 0
+    var codexSubagentCount = 0
+    var codexUnrecognizedProvenanceCount = 0
     var archivedCodexCount = 0
     var archiveConflicts = 0
     var claudeCount = 0
@@ -76,6 +79,7 @@ actor SessionStore {
     /// until a trustworthy pass confirms they fell outside the window. The
     /// only refresh-derived visibility state; empty in steady state.
     private var protectedIDs = Set<String>()
+    private var includeCodexSubagents = false
     private(set) var lastStats = StoreStats()
     /// A cache file exists on disk but is unusable (version mismatch / decode
     /// failure): the old indexedIDs are gone, so sessions deleted before the
@@ -192,10 +196,12 @@ actor SessionStore {
         historyWindow: SpotlightHistoryWindow = .all,
         now: Date = Date(),
         includeTouchedFiles: Bool = false,
-        includeArchivedCodex: Bool = false
+        includeArchivedCodex: Bool = false,
+        includeCodexSubagents: Bool = false
     ) async -> SessionDiff {
         self.historyWindow = historyWindow
         historyReferenceDate = now
+        self.includeCodexSubagents = includeCodexSubagents
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
         var hydratedPromptPaths = Set<String>()
@@ -514,6 +520,15 @@ actor SessionStore {
 
         lastStats = StoreStats(
             codexCount: records.values.count(where: { $0.agent == .codex }),
+            codexTopLevelCount: records.values.count(where: {
+                $0.agent == .codex && $0.codexProvenance == .topLevel
+            }),
+            codexSubagentCount: records.values.count(where: {
+                $0.agent == .codex && $0.codexProvenance == .subagent
+            }),
+            codexUnrecognizedProvenanceCount: records.values.count(where: {
+                $0.agent == .codex && $0.codexProvenance == .unrecognized
+            }),
             archivedCodexCount: records.values.count(where: { $0.agent == .codex && $0.isArchived }),
             archiveConflicts: archiveConflictIDs.count,
             claudeCount: records.values.count(where: { $0.agent == .claude }),
@@ -600,6 +615,7 @@ actor SessionStore {
     private func isPolicyAllowed(_ record: SessionRecord) -> Bool {
         hiddenSessions.allowsVisibility(of: record.id)
             && !projectExclusions.excludes(cwd: record.cwd)
+            && (includeCodexSubagents || record.codexProvenance != .subagent)
     }
 
     /// Policy-allowed and inside the history window as of the last refresh's
@@ -906,12 +922,13 @@ actor SessionStore {
     func scanReport() -> String {
         var lines = [
             "Spotion scan report",
-            "codex=\(lastStats.codexCount) archivedCodex=\(lastStats.archivedCodexCount) archiveConflicts=\(lastStats.archiveConflicts) claude=\(lastStats.claudeCount) parseFailures=\(lastStats.parseFailures)",
+            "codex=\(lastStats.codexCount) topLevelCodex=\(lastStats.codexTopLevelCount) subagentCodex=\(lastStats.codexSubagentCount) unrecognizedCodex=\(lastStats.codexUnrecognizedProvenanceCount) archivedCodex=\(lastStats.archivedCodexCount) archiveConflicts=\(lastStats.archiveConflicts) claude=\(lastStats.claudeCount) parseFailures=\(lastStats.parseFailures)",
             "indexedIDs=\(cache.indexedIDs.count) lastRefresh=\(lastStats.lastRefresh.map(String.init(describing:)) ?? "never")",
             "",
         ]
         for record in all(limit: 5) {
-            let state = record.isArchived ? " archived" : ""
+            var state = record.isArchived ? " archived" : ""
+            if record.codexProvenance == .subagent { state += " subagent" }
             lines.append("[\(record.agent.rawValue)\(state)] \(displayTitle(for: record)) — \(record.projectName) — \(record.lastActivityAt)")
         }
         return lines.joined(separator: "\n")
