@@ -24,6 +24,21 @@ import Testing
     static let responseItemUser =
         "{\"timestamp\":\"2026-08-05T10:08:55.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"CONTEXT INJECTION\"}]}}"
 
+    static func assistantMessage(
+        _ texts: [String],
+        blockType: String = "output_text",
+        phase: String? = "final_answer"
+    ) throws -> String {
+        var payload: [String: Any] = [
+            "type": "message",
+            "role": "assistant",
+            "content": texts.map { ["type": blockType, "text": $0] },
+        ]
+        if let phase { payload["phase"] = phase }
+        return String(decoding: try JSONSerialization.data(
+            withJSONObject: ["type": "response_item", "payload": payload]), as: UTF8.self)
+    }
+
     static func fileToolCall(
         _ name: String,
         field: String = "path",
@@ -120,6 +135,67 @@ import Testing
         #expect(record.laterPromptSnippets.allSatisfy { $0.count <= 300 })
         #expect(record.laterPromptSnippets.joined(separator: "\n").count <= 1_500)
         #expect(!record.laterPromptSnippets.contains("duplicate"))
+    }
+
+    @Test func assistantReplyOptInAllowsOnlyVisibleMessageText() throws {
+        let reasoning =
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"summary\":[{\"text\":\"SECRET_REASONING\"}]}}"
+        let toolOutput =
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"output\":\"SECRET_TOOL_OUTPUT\"}}"
+        let eventMessage =
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"SECRET_EVENT\"}}"
+        let home = try makeHome(sessionLines: [
+            Self.meta(),
+            Self.userMessage("first prompt"),
+            try Self.assistantMessage(["  older   visible reply  "]),
+            reasoning,
+            toolOutput,
+            eventMessage,
+            Self.responseItemUser,
+            try Self.assistantMessage(["SECRET_COMMENTARY"], phase: "commentary"),
+            try Self.assistantMessage(["SECRET_UNKNOWN_BLOCK"], blockType: "future_text"),
+            try Self.assistantMessage(["new visible", "reply part"]),
+            "MALFORMED TAIL LINE",
+        ])
+        let scanner = CodexScanner(codexHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+
+        let disabled = try #require(scanner.parse(file).record)
+        #expect(disabled.assistantReplySnippets.isEmpty)
+
+        let enabled = try #require(scanner.parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: false,
+            includeAssistantReplies: true
+        ).record)
+        #expect(enabled.assistantReplySnippets == ["new visible reply part", "older visible reply"])
+        #expect(enabled.assistantReplyHydrationGeneration == AssistantReplySnippetPolicy.extractionGeneration)
+        #expect(!enabled.assistantReplySnippets.joined(separator: " ").contains("SECRET_"))
+    }
+
+    @Test func assistantReplyLimitsDuplicatesAndBoundedTail() throws {
+        let giant = String(repeating: "Z", count: AssistantReplySnippetPolicy.tailReadCap + 1_024)
+        var lines = [Self.meta(), Self.userMessage("first"), try Self.assistantMessage(["outside bounded tail"])]
+        lines.append(try Self.assistantMessage([giant]))
+        lines.append(contentsOf: try ["duplicate", "duplicate", "A", "B", "C", "D", "newest"].map {
+            try Self.assistantMessage([String(repeating: $0, count: 400)])
+        })
+        let home = try makeHome(sessionLines: lines)
+        let scanner = CodexScanner(codexHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: false,
+            includeAssistantReplies: true
+        ).record)
+
+        #expect(record.assistantReplySnippets.count == 5)
+        #expect(record.assistantReplySnippets.first == String(repeating: "newest", count: 50))
+        #expect(record.assistantReplySnippets.allSatisfy { $0.count <= 300 })
+        #expect(record.assistantReplySnippets.joined(separator: "\n").count <= 1_500)
+        #expect(!record.assistantReplySnippets.contains("outside bounded tail"))
     }
 
     @Test func touchedFilesUseOnlyAllowlistedStructuredInputs() throws {

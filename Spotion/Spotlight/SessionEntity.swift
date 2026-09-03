@@ -16,6 +16,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var agent: AgentKind
     var firstPromptSnippet: String?
     var laterPromptSnippets: [String]
+    var assistantReplySnippets: [String]
     var touchedFilePaths: [String]
     var isArchived: Bool
     var gitBranch: String?
@@ -34,6 +35,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.agent = record.agent
         self.firstPromptSnippet = record.firstPrompt
         self.laterPromptSnippets = record.laterPromptSnippets
+        self.assistantReplySnippets = record.assistantReplySnippets
         self.touchedFilePaths = record.touchedFilePaths
         self.isArchived = record.isArchived
         self.gitBranch = record.gitBranch
@@ -71,8 +73,10 @@ struct SessionEntity: AppEntity, IndexedEntity {
         attributes.contentDescription = SessionRecord.spotlightContentDescription(
             firstPrompt: firstPromptSnippet,
             laterPrompts: laterPromptSnippets,
+            assistantReplies: assistantReplySnippets,
             cwd: cwd,
             includeLaterPrompts: SpotionSettings.searchLaterPrompts,
+            includeAssistantReplies: SpotionSettings.searchAssistantReplies,
             gitBranch: gitBranch,
             sourceTitle: sourceTitle == title ? nil : sourceTitle,
             isArchived: isArchived,

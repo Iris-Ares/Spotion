@@ -192,13 +192,15 @@ actor SessionStore {
         historyWindow: SpotlightHistoryWindow = .all,
         now: Date = Date(),
         includeTouchedFiles: Bool = false,
-        includeArchivedCodex: Bool = false
+        includeArchivedCodex: Bool = false,
+        includeAssistantReplies: Bool = false
     ) async -> SessionDiff {
         self.historyWindow = historyWindow
         historyReferenceDate = now
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
         var hydratedPromptPaths = Set<String>()
+        var hydratedAssistantReplyPaths = Set<String>()
 
         if cache.searchLaterPromptsEnabled != includeLaterPrompts {
             cache.searchLaterPromptsEnabled = includeLaterPrompts
@@ -216,6 +218,27 @@ actor SessionStore {
                 for path in Array(cache.entries.keys) {
                     guard var record = cache.entries[path]?.record else { continue }
                     record.laterPromptSnippets = []
+                    cache.entries[path]?.record = record
+                    changedIDs.insert(record.id)
+                }
+            }
+        }
+
+        let assistantReplyGeneration = includeAssistantReplies
+            ? AssistantReplySnippetPolicy.extractionGeneration
+            : 0
+        if cache.assistantReplyExtractionGeneration != assistantReplyGeneration {
+            cache.assistantReplyExtractionGeneration = assistantReplyGeneration
+            if includeAssistantReplies {
+                cache.assistantReplyPendingPaths = Set(cache.entries.keys)
+            } else {
+                // Transient reply text is already absent after relaunch, but
+                // every indexed record must overwrite its prior donation.
+                cache.assistantReplyPendingPaths = []
+                for path in Array(cache.entries.keys) {
+                    guard var record = cache.entries[path]?.record else { continue }
+                    record.assistantReplySnippets = []
+                    record.assistantReplyHydrationGeneration = 0
                     cache.entries[path]?.record = record
                     changedIDs.insert(record.id)
                 }
@@ -291,6 +314,19 @@ actor SessionStore {
                 }
             }
         }
+        if includeAssistantReplies {
+            let needsHydration = cache.dirtyIDs
+                .union(changedIDs)
+                .union(Set(records.keys).subtracting(cache.indexedIDs))
+            for (path, entry) in cache.entries {
+                if let record = entry.record,
+                   needsHydration.contains(record.id),
+                   record.assistantReplyHydrationGeneration
+                    != AssistantReplySnippetPolicy.extractionGeneration {
+                    cache.assistantReplyPendingPaths.insert(path)
+                }
+            }
+        }
 
         struct RootState {
             var agent: AgentKind
@@ -335,7 +371,8 @@ actor SessionStore {
                 if let entry = cache.entries[file.path],
                    entry.mtime == file.mtime, entry.size == file.size,
                    !cache.laterPromptPendingPaths.contains(file.path),
-                   !cache.touchedFilePendingPaths.contains(file.path) {
+                   !cache.touchedFilePendingPaths.contains(file.path),
+                   !cache.assistantReplyPendingPaths.contains(file.path) {
                     continue
                 }
                 toParse.append((scanner, file))
@@ -349,7 +386,8 @@ actor SessionStore {
                     (file, scanner.agent, scanner.parse(
                         file,
                         includeLaterPrompts: includeLaterPrompts,
-                        includeTouchedFiles: includeTouchedFiles
+                        includeTouchedFiles: includeTouchedFiles,
+                        includeAssistantReplies: includeAssistantReplies
                     ))
                 }
             }
@@ -368,6 +406,8 @@ actor SessionStore {
             cache.laterPromptPendingPaths.remove(file.path)
             if includeLaterPrompts { hydratedPromptPaths.insert(file.path) }
             cache.touchedFilePendingPaths.remove(file.path)
+            cache.assistantReplyPendingPaths.remove(file.path)
+            if includeAssistantReplies { hydratedAssistantReplyPaths.insert(file.path) }
             var record = outcome.record
             // Claude desktop's claude://resume import rewrites the transcript
             // in place with the tail title records stripped. Same path + same
@@ -409,6 +449,7 @@ actor SessionStore {
             }
             cache.laterPromptPendingPaths.remove(path)
             cache.touchedFilePendingPaths.remove(path)
+            cache.assistantReplyPendingPaths.remove(path)
         }
 
         // Rebuild uniformly from entries (handles winner selection among
@@ -475,6 +516,13 @@ actor SessionStore {
                 cache.touchedFilePendingPaths.insert(record.filePath)
             }
         }
+        if includeAssistantReplies {
+            for id in changedIDs {
+                guard let record = records[id],
+                      !hydratedAssistantReplyPaths.contains(record.filePath) else { continue }
+                cache.assistantReplyPendingPaths.insert(record.filePath)
+            }
+        }
 
         // If an enabled root could not be enumerated, its cached activity time
         // may be stale. Keep already-indexed items in Spotlight until a
@@ -506,7 +554,13 @@ actor SessionStore {
             guard let path = records[$0]?.filePath else { return false }
             return cache.touchedFilePendingPaths.contains(path)
         }) : []
-        let hydrationBlockedIDs = promptHydrationBlockedIDs.union(touchedFileHydrationBlockedIDs)
+        let assistantReplyHydrationBlockedIDs = includeAssistantReplies ? Set(upsertIDs.filter {
+            guard let path = records[$0]?.filePath else { return false }
+            return cache.assistantReplyPendingPaths.contains(path)
+        }) : []
+        let hydrationBlockedIDs = promptHydrationBlockedIDs
+            .union(touchedFileHydrationBlockedIDs)
+            .union(assistantReplyHydrationBlockedIDs)
         let diff = SessionDiff(
             upserts: upsertIDs.subtracting(hydrationBlockedIDs).compactMap { records[$0] },
             deletedIDs: Array(cache.indexedIDs.subtracting(visibleIDs))

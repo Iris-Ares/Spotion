@@ -356,6 +356,119 @@ import Testing
         })
     }
 
+    @Test func assistantReplyToggleHydratesTransientTextRetriesAndStabilizes() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("codex first"),
+                try CodexScannerTests.assistantMessage(["codex distinctive answer"]),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        try TestSupport.write(
+            [
+                ClaudeScannerTests.user("claude first"),
+                try ClaudeScannerTests.assistantBlocks([
+                    ["type": "text", "text": "claude distinctive answer"],
+                ]),
+            ].joined(separator: "\n") + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeAssistantReplies: false)
+        #expect(initial.upserts.count == 2)
+        #expect(initial.upserts.allSatisfy { $0.assistantReplySnippets.isEmpty })
+        await store.markIndexed(initial)
+        #expect(await store.refresh(enabledAgents: both, includeAssistantReplies: false).isEmpty)
+
+        let enabled = await store.refresh(enabledAgents: both, includeAssistantReplies: true)
+        #expect(enabled.upserts.count == 2)
+        #expect(enabled.upserts.contains { $0.assistantReplySnippets == ["codex distinctive answer"] })
+        #expect(enabled.upserts.contains { $0.assistantReplySnippets == ["claude distinctive answer"] })
+        #expect(enabled.upserts.allSatisfy {
+            $0.spotlightContentDescription(
+                includeLaterPrompts: false,
+                includeAssistantReplies: true
+            ).contains("distinctive answer")
+        })
+
+        // A failed donation keeps the dirty ids and transient text available
+        // for retry without ever persisting the snippets.
+        let retried = await store.refresh(enabledAgents: both, includeAssistantReplies: true)
+        #expect(retried.upserts.count == 2)
+        #expect(retried.upserts.allSatisfy { !$0.assistantReplySnippets.isEmpty })
+        await store.markIndexed(retried)
+        #expect(await store.refresh(enabledAgents: both, includeAssistantReplies: true).isEmpty)
+
+        let persistedCache = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        #expect(!persistedCache.contains("distinctive answer"))
+
+        // Disabling after relaunch must overwrite Spotlight even though the
+        // transient replies are already absent from the decoded cache.
+        let disablingRelaunch = makeStore(env)
+        await disablingRelaunch.bootstrap()
+        let disabled = await disablingRelaunch.refresh(
+            enabledAgents: both,
+            includeAssistantReplies: false)
+        #expect(disabled.upserts.count == 2)
+        #expect(disabled.upserts.allSatisfy { $0.assistantReplySnippets.isEmpty })
+        #expect(disabled.upserts.allSatisfy {
+            !$0.spotlightContentDescription(
+                includeLaterPrompts: false,
+                includeAssistantReplies: false
+            ).contains("distinctive answer")
+        })
+        await disablingRelaunch.markIndexed(disabled)
+        #expect(await disablingRelaunch.refresh(
+            enabledAgents: both,
+            includeAssistantReplies: false).isEmpty)
+
+        // A later full rebuild rehydrates both unchanged transcripts before
+        // their new Spotlight donations are emitted.
+        let rebuildingRelaunch = makeStore(env)
+        await rebuildingRelaunch.bootstrap()
+        await rebuildingRelaunch.forgetIndexed()
+        let rebuilt = await rebuildingRelaunch.refresh(
+            enabledAgents: both,
+            includeAssistantReplies: true)
+        #expect(rebuilt.upserts.count == 2)
+        #expect(rebuilt.upserts.allSatisfy { !$0.assistantReplySnippets.isEmpty })
+    }
+
+    @Test func assistantReplyGenerationChangeReparsesUnchangedSessionsOnce() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("first"),
+                try CodexScannerTests.assistantMessage(["generation answer"]),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex], includeAssistantReplies: true)
+        await store.markIndexed(initial)
+
+        let cached = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        let olderGeneration = cached.replacingOccurrences(
+            of: "\"assistantReplyExtractionGeneration\":\(AssistantReplySnippetPolicy.extractionGeneration)",
+            with: "\"assistantReplyExtractionGeneration\":0")
+        #expect(olderGeneration != cached)
+        try olderGeneration.write(to: env.cacheURL, atomically: true, encoding: .utf8)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let migrated = await relaunched.refresh(enabledAgents: [.codex], includeAssistantReplies: true)
+        #expect(migrated.upserts.count == 1)
+        #expect(migrated.upserts.first?.assistantReplySnippets == ["generation answer"])
+        await relaunched.markIndexed(migrated)
+        #expect(await relaunched.refresh(
+            enabledAgents: [.codex],
+            includeAssistantReplies: true).isEmpty)
+    }
+
     @Test func preGitBranchCacheReparsesAndUpsertsOnce() async throws {
         let env = try makeEnv()
         let sessionURL = try TestSupport.write(
