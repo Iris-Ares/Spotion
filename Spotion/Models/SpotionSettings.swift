@@ -90,6 +90,12 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "searchLaterPrompts") }
     }
 
+    /// Privacy-sensitive visible assistant text. Missing preference means off.
+    static var searchAssistantReplies: Bool {
+        get { d.bool(forKey: "searchAssistantReplies") }
+        set { d.set(newValue, forKey: "searchAssistantReplies") }
+    }
+
     /// Missing or unknown values preserve the pre-feature behavior.
     static var spotlightHistoryWindow: SpotlightHistoryWindow {
         get {
