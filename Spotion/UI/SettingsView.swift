@@ -262,6 +262,7 @@ private struct AdvancedSettingsTab: View {
 private struct IndexSettingsTab: View {
     private var state = AppCoordinator.shared.uiState
     @State private var searchLaterPrompts = SpotionSettings.searchLaterPrompts
+    @State private var searchAssistantReplies = SpotionSettings.searchAssistantReplies
     @State private var historyWindow = SpotionSettings.spotlightHistoryWindow
     @State private var searchTouchedFiles = SpotionSettings.searchTouchedFiles
     @State private var includeArchivedCodex = SpotionSettings.includeArchivedCodexSessions
@@ -289,6 +290,14 @@ private struct IndexSettingsTab: View {
                         Task { await AppCoordinator.shared.refreshAndApply() }
                     }
                 Text("Off by default. When enabled, up to five recent user prompts per session are stored only in the local macOS Spotlight index. Assistant, tool, thinking, command-wrapper, sidechain, and attachment content is excluded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Search recent assistant replies", isOn: $searchAssistantReplies)
+                    .onChange(of: searchAssistantReplies) {
+                        SpotionSettings.searchAssistantReplies = searchAssistantReplies
+                        Task { await AppCoordinator.shared.refreshAndApply() }
+                    }
+                Text("Off by default. Donates up to five recent visible assistant text snippets only to the local macOS Spotlight index. Thinking, tools, system content, sidechains, attachments, and persisted Spotion state are excluded.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Search files touched", isOn: $searchTouchedFiles)

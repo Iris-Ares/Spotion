@@ -87,6 +87,17 @@ struct ClaudeScanner: SessionScanner {
                     blocks.compactMap { $0.type == "text" ? $0.text : nil }.joined(separator: "\n")
                 }
             }
+
+            /// Assistant messages use either a legacy direct string or typed
+            /// blocks. Only visible text blocks are accepted; thinking, tools,
+            /// results, images, and unknown blocks remain excluded.
+            var visibleAssistantText: String {
+                switch self {
+                case .text(let s): s
+                case .blocks(let blocks):
+                    blocks.compactMap { $0.type == "text" ? $0.text : nil }.joined(separator: "\n")
+                }
+            }
         }
 
         var type: String?
@@ -111,7 +122,8 @@ struct ClaudeScanner: SessionScanner {
     func parse(
         _ file: ScannedFile,
         includeLaterPrompts: Bool,
-        includeTouchedFiles: Bool
+        includeTouchedFiles: Bool,
+        includeAssistantReplies: Bool
     ) -> ParseOutcome {
         var cap = 256 * 1024
         var best: SessionRecord?
@@ -134,7 +146,8 @@ struct ClaudeScanner: SessionScanner {
                     to: record,
                     file: file,
                     includeLaterPrompts: includeLaterPrompts,
-                    includeTouchedFiles: includeTouchedFiles
+                    includeTouchedFiles: includeTouchedFiles,
+                    includeAssistantReplies: includeAssistantReplies
                 )
             }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
@@ -143,7 +156,8 @@ struct ClaudeScanner: SessionScanner {
                     to: best,
                     file: file,
                     includeLaterPrompts: includeLaterPrompts,
-                    includeTouchedFiles: includeTouchedFiles
+                    includeTouchedFiles: includeTouchedFiles,
+                    includeAssistantReplies: includeAssistantReplies
                 )
             }
             cap *= 2
@@ -203,17 +217,24 @@ struct ClaudeScanner: SessionScanner {
         to record: SessionRecord,
         file: ScannedFile,
         includeLaterPrompts: Bool,
-        includeTouchedFiles: Bool
+        includeTouchedFiles: Bool,
+        includeAssistantReplies: Bool
     ) -> ParseOutcome {
-        guard includeLaterPrompts || includeTouchedFiles else { return .record(record) }
+        guard includeLaterPrompts || includeTouchedFiles || includeAssistantReplies else {
+            return .record(record)
+        }
         guard let lines = try? JSONLReader.tailLines(
             of: URL(fileURLWithPath: file.path),
-            cap: max(PromptSnippetPolicy.tailReadCap, TouchedFilePolicy.tailReadCap)
+            cap: max(
+                PromptSnippetPolicy.tailReadCap,
+                TouchedFilePolicy.tailReadCap,
+                AssistantReplySnippetPolicy.tailReadCap)
         ) else { return .ioFailure }
 
         let decoder = JSONDecoder()
         var prompts: [String] = []
         var toolPaths: [String] = []
+        var assistantReplies: [String] = []
         for data in lines {
             guard let envelope = try? decoder.decode(Envelope.self, from: data),
                   envelope.isSidechain != true else { continue }
@@ -230,6 +251,13 @@ struct ClaudeScanner: SessionScanner {
                case .blocks(let blocks) = envelope.message?.content {
                 toolPaths.append(contentsOf: blocks.compactMap(Self.structuredFilePath))
             }
+            if includeAssistantReplies,
+               envelope.type == "assistant",
+               envelope.message?.role == "assistant",
+               let text = envelope.message?.content?.visibleAssistantText,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                assistantReplies.append(text)
+            }
         }
         var updated = record
         if includeLaterPrompts {
@@ -245,6 +273,10 @@ struct ClaudeScanner: SessionScanner {
         }
         if includeTouchedFiles {
             updated.touchedFileHydrationGeneration = TouchedFilePolicy.extractionGeneration
+        }
+        if includeAssistantReplies {
+            updated.assistantReplySnippets = AssistantReplySnippetPolicy.mostRecent(assistantReplies)
+            updated.assistantReplyHydrationGeneration = AssistantReplySnippetPolicy.extractionGeneration
         }
         return .record(updated)
     }

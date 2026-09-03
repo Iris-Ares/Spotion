@@ -19,6 +19,18 @@ import Testing
         return "{\"type\":\"assistant\",\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp/proj\",\"timestamp\":\"2026-08-05T10:00:02.000Z\",\"isSidechain\":false,\"message\":{\"role\":\"assistant\",\"content\":\"\(text)\"}}"
     }
 
+    static func assistantBlocks(_ blocks: [[String: Any]], sidechain: Bool = false) throws -> String {
+        let line: [String: Any] = [
+            "type": "assistant",
+            "sessionId": uuid,
+            "cwd": "/tmp/proj",
+            "timestamp": "2026-08-05T10:00:02.000Z",
+            "isSidechain": sidechain,
+            "message": ["role": "assistant", "content": blocks],
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: line), as: UTF8.self)
+    }
+
     static func userWithRole(_ content: String, role: String) -> String {
         "{\"type\":\"user\",\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp/proj\",\"timestamp\":\"2026-08-05T10:00:01.000Z\",\"isSidechain\":false,\"message\":{\"role\":\"\(role)\",\"content\":\"\(content)\"}}"
     }
@@ -121,6 +133,67 @@ import Testing
         let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
 
         #expect(record.laterPromptSnippets == ["inside bounded tail"])
+    }
+
+    @Test func assistantReplyOptInAllowsOnlyVisibleNonSidechainText() throws {
+        let mixed = try Self.assistantBlocks([
+            ["type": "text", "text": "  older   visible  "],
+            ["type": "thinking", "thinking": "SECRET_THINKING"],
+            ["type": "tool_use", "name": "Read", "input": ["file_path": "SECRET_INPUT"]],
+            ["type": "tool_result", "text": "SECRET_RESULT"],
+            ["type": "image", "source": ["data": "SECRET_IMAGE"]],
+            ["type": "future_text", "text": "SECRET_UNKNOWN"],
+        ])
+        let home = try makeHome(lines: [
+            Self.user("first prompt"),
+            mixed,
+            try Self.assistantBlocks([["type": "text", "text": "SECRET_SIDECHAIN"]], sidechain: true),
+            Self.userWithRole("SECRET_WRONG_ENVELOPE", role: "assistant"),
+            try Self.assistantBlocks([
+                ["type": "text", "text": "new visible"],
+                ["type": "text", "text": "reply"],
+            ]),
+            "MALFORMED TAIL LINE",
+        ])
+        let scanner = ClaudeScanner(claudeHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+
+        let disabled = try #require(scanner.parse(file).record)
+        #expect(disabled.assistantReplySnippets.isEmpty)
+
+        let enabled = try #require(scanner.parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: false,
+            includeAssistantReplies: true
+        ).record)
+        #expect(enabled.assistantReplySnippets == ["new visible reply", "older visible"])
+        #expect(enabled.assistantReplyHydrationGeneration == AssistantReplySnippetPolicy.extractionGeneration)
+        #expect(!enabled.assistantReplySnippets.joined(separator: " ").contains("SECRET_"))
+    }
+
+    @Test func assistantReplyLimitsDuplicatesAndBoundedTail() throws {
+        let giant = String(repeating: "Z", count: AssistantReplySnippetPolicy.tailReadCap + 1_024)
+        var lines = [Self.user("first"), try Self.assistantBlocks([["type": "text", "text": "outside bounded tail"]])]
+        lines.append(try Self.assistantBlocks([["type": "text", "text": giant]]))
+        lines.append(contentsOf: try ["duplicate", "duplicate", "A", "B", "C", "D", "newest"].map {
+            try Self.assistantBlocks([["type": "text", "text": String(repeating: $0, count: 400)]])
+        })
+        let home = try makeHome(lines: lines)
+        let scanner = ClaudeScanner(claudeHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: false,
+            includeAssistantReplies: true
+        ).record)
+
+        #expect(record.assistantReplySnippets.count == 5)
+        #expect(record.assistantReplySnippets.first == String(repeating: "newest", count: 50))
+        #expect(record.assistantReplySnippets.allSatisfy { $0.count <= 300 })
+        #expect(record.assistantReplySnippets.joined(separator: "\n").count <= 1_500)
+        #expect(!record.assistantReplySnippets.contains("outside bounded tail"))
     }
 
     @Test func touchedFilesUseOnlyAllowlistedToolUseBlocks() throws {

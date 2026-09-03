@@ -264,7 +264,8 @@ final class AppCoordinator {
             historyWindow: SpotionSettings.spotlightHistoryWindow,
             now: started,
             includeTouchedFiles: SpotionSettings.searchTouchedFiles,
-            includeArchivedCodex: SpotionSettings.includeArchivedCodexSessions
+            includeArchivedCodex: SpotionSettings.includeArchivedCodexSessions,
+            includeAssistantReplies: SpotionSettings.searchAssistantReplies
         )
         do {
             if !diff.upserts.isEmpty {
