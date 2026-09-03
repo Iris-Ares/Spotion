@@ -72,6 +72,97 @@ struct CodexScanner: SessionScanner {
 
     private struct Probe: Decodable { var type: String? }
 
+    private struct DynamicKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    /// A deliberately strict decoder for Codex's persisted SessionSource enum.
+    /// Only official, version-compatible subagent variants can hide a record;
+    /// every unsupported or conflicting shape fails open as unrecognized.
+    private struct ProvenanceSource: Decodable {
+        var classification: CodexSessionProvenance
+        var parentSessionID: String?
+
+        init(from decoder: Decoder) throws {
+            if let scalar = try? decoder.singleValueContainer(),
+               let value = try? scalar.decode(String.self) {
+                classification = ["cli", "vscode", "exec", "mcp", "app_server", "appServer"].contains(value)
+                    ? .topLevel : .unrecognized
+                parentSessionID = nil
+                return
+            }
+
+            guard let root = try? decoder.container(keyedBy: DynamicKey.self) else {
+                classification = .unrecognized
+                parentSessionID = nil
+                return
+            }
+            if root.allKeys.map(\.stringValue) == ["custom"],
+               let customKey = DynamicKey(stringValue: "custom"),
+               let value = try? root.decode(String.self, forKey: customKey),
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                classification = .topLevel
+                parentSessionID = nil
+                return
+            }
+            guard root.allKeys.map(\.stringValue) == ["subagent"],
+                  let subagentKey = DynamicKey(stringValue: "subagent")
+            else {
+                classification = .unrecognized
+                parentSessionID = nil
+                return
+            }
+
+            if let scalar = try? root.superDecoder(forKey: subagentKey).singleValueContainer(),
+               let value = try? scalar.decode(String.self),
+               ["review", "compact", "memory_consolidation"].contains(value) {
+                classification = .subagent
+                parentSessionID = nil
+                return
+            }
+
+            guard let nestedDecoder = try? root.superDecoder(forKey: subagentKey),
+                  let nested = try? nestedDecoder.container(keyedBy: DynamicKey.self),
+                  nested.allKeys.count == 1,
+                  let variant = nested.allKeys.first
+            else {
+                classification = .unrecognized
+                parentSessionID = nil
+                return
+            }
+
+            switch variant.stringValue {
+            case "other":
+                let label = try? nested.decode(String.self, forKey: variant)
+                classification = label?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? .subagent : .unrecognized
+                parentSessionID = nil
+            case "thread_spawn":
+                guard let spawnDecoder = try? nested.superDecoder(forKey: variant),
+                      let spawn = try? spawnDecoder.container(keyedBy: DynamicKey.self),
+                      let parentKey = DynamicKey(stringValue: "parent_thread_id"),
+                      let depthKey = DynamicKey(stringValue: "depth"),
+                      let parent = try? spawn.decode(String.self, forKey: parentKey),
+                      !parent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      UUID(uuidString: parent) != nil,
+                      (try? spawn.decode(Int.self, forKey: depthKey)) != nil
+                else {
+                    classification = .unrecognized
+                    parentSessionID = nil
+                    return
+                }
+                classification = .subagent
+                parentSessionID = parent
+            default:
+                classification = .unrecognized
+                parentSessionID = nil
+            }
+        }
+    }
+
     private struct MetaLine: Decodable {
         struct Payload: Decodable {
             struct GitMetadata: Decodable {
@@ -83,9 +174,11 @@ struct CodexScanner: SessionScanner {
             var cwd: String?
             var timestamp: String?
             var git: GitMetadata?
+            var codexProvenance: CodexSessionProvenance
+            var parentSessionID: String?
 
             private enum CodingKeys: String, CodingKey {
-                case session_id, id, cwd, timestamp, git
+                case session_id, id, cwd, timestamp, git, source
             }
 
             /// Codex metadata is internal and may change shape. Decode every
@@ -98,6 +191,16 @@ struct CodexScanner: SessionScanner {
                 cwd = try? values.decode(String.self, forKey: .cwd)
                 timestamp = try? values.decode(String.self, forKey: .timestamp)
                 git = try? values.decode(GitMetadata.self, forKey: .git)
+                if !values.contains(.source) {
+                    codexProvenance = .topLevel
+                    parentSessionID = nil
+                } else if let source = try? values.decode(ProvenanceSource.self, forKey: .source) {
+                    codexProvenance = source.classification
+                    parentSessionID = source.parentSessionID
+                } else {
+                    codexProvenance = .unrecognized
+                    parentSessionID = nil
+                }
             }
         }
         var payload: Payload
@@ -150,7 +253,8 @@ struct CodexScanner: SessionScanner {
             // giant injected line (response_item etc.) can push session_meta or
             // the first user_message past the current window. At the 4MB cap /
             // file end, accept what we have (no prompt → project-name title).
-            if let record = best, record.firstPrompt != nil {
+            if let record = best,
+               record.firstPrompt != nil || record.codexProvenance == .subagent {
                 return addingTransientMetadata(
                     to: record,
                     file: file,
@@ -208,10 +312,15 @@ struct CodexScanner: SessionScanner {
             agent: .codex,
             sessionID: sessionID,
             fallbackTitle: nil,
-            firstPrompt: firstPrompt,
+            // A child rollout may begin with inherited parent history. Keep
+            // that transcript text out of Spotion's durable cache and labels;
+            // the compact provenance and optional parent id are sufficient.
+            firstPrompt: meta.codexProvenance == .subagent ? nil : firstPrompt,
             laterPromptSnippets: [],
             touchedFileBasePath: meta.cwd,
             isArchived: source.isArchived,
+            codexProvenance: meta.codexProvenance,
+            parentSessionID: meta.parentSessionID,
             cwd: cwd,
             projectName: (cwd as NSString).lastPathComponent,
             gitBranch: gitBranch,

@@ -18,6 +18,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var laterPromptSnippets: [String]
     var touchedFilePaths: [String]
     var isArchived: Bool
+    var codexProvenance: CodexSessionProvenance
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
@@ -36,6 +37,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.laterPromptSnippets = record.laterPromptSnippets
         self.touchedFilePaths = record.touchedFilePaths
         self.isArchived = record.isArchived
+        self.codexProvenance = record.codexProvenance
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
@@ -51,9 +53,11 @@ struct SessionEntity: AppEntity, IndexedEntity {
                 ? "chevron.left.forwardslash.chevron.right"
                 : "asterisk.circle")
         }
-        let subtitle = isArchived
-            ? "Archived · \(agent.displayName) · \(projectName)"
-            : "\(agent.displayName) · \(projectName)"
+        var labels: [String] = []
+        if isArchived { labels.append("Archived") }
+        if codexProvenance == .subagent { labels.append("Subagent") }
+        labels.append(contentsOf: [agent.displayName, projectName])
+        let subtitle = labels.joined(separator: " · ")
         return DisplayRepresentation(
             title: "\(title)",
             subtitle: "\(subtitle)",
@@ -76,6 +80,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
             gitBranch: gitBranch,
             sourceTitle: sourceTitle == title ? nil : sourceTitle,
             isArchived: isArchived,
+            isSubagent: codexProvenance == .subagent,
             touchedFilePaths: SpotionSettings.searchTouchedFiles ? touchedFilePaths : []
         )
         attributes.keywords = SessionRecord.spotlightKeywords(

@@ -265,6 +265,7 @@ private struct IndexSettingsTab: View {
     @State private var historyWindow = SpotionSettings.spotlightHistoryWindow
     @State private var searchTouchedFiles = SpotionSettings.searchTouchedFiles
     @State private var includeArchivedCodex = SpotionSettings.includeArchivedCodexSessions
+    @State private var includeCodexSubagents = SpotionSettings.includeCodexSubagentSessions
     @State private var checkTerm = ""
     @State private var checkResult: String?
 
@@ -305,6 +306,14 @@ private struct IndexSettingsTab: View {
                         Task { await AppCoordinator.shared.refreshAndApply() }
                     }
                 Text("Off by default. Archived results are visibly labeled and require confirmation before Spotion asks Codex to unarchive and open them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Include Codex subagent sessions", isOn: $includeCodexSubagents)
+                    .onChange(of: includeCodexSubagents) {
+                        SpotionSettings.includeCodexSubagentSessions = includeCodexSubagents
+                        Task { await AppCoordinator.shared.refreshAndApply() }
+                    }
+                Text("Off by default. Confirmed delegated child sessions stay out of Spotlight, menus, suggestions, and Continue Latest. Including them adds a visible Subagent label and never changes Codex source files.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -373,6 +382,11 @@ private struct IndexSettingsTab: View {
             }
             Section("状态") {
                 LabeledContent("Codex 会话", value: "\(state.codexCount)")
+                LabeledContent("Top-level Codex", value: "\(state.codexTopLevelCount)")
+                LabeledContent("Codex subagents", value: "\(state.codexSubagentCount)")
+                if state.codexUnrecognizedProvenanceCount > 0 {
+                    LabeledContent("Unrecognized Codex provenance", value: "\(state.codexUnrecognizedProvenanceCount)")
+                }
                 if state.archivedCodexCount > 0 {
                     LabeledContent("Archived Codex", value: "\(state.archivedCodexCount)")
                 }

@@ -1,5 +1,13 @@
 import Foundation
 
+enum CodexSessionProvenance: String, Codable, Sendable, Hashable {
+    case topLevel
+    case subagent
+    /// Missing legacy metadata is top-level; present but unsupported or
+    /// malformed metadata is unrecognized and deliberately remains visible.
+    case unrecognized
+}
+
 struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     /// Stable Spotlight identifier: "codex:<uuid>" / "claude:<uuid>"
     var id: String
@@ -9,7 +17,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     /// claude: title parsed from the tail title records; always nil for codex
     /// (codex titles live in session_index.jsonl)
     var fallbackTitle: String?
-    /// First real user input (truncated to ~300 characters)
+    /// First real user input (truncated to ~300 characters). Confirmed Codex
+    /// children keep this nil because their leading history may be inherited.
     var firstPrompt: String?
     /// Opt-in, bounded snippets from the most recent later user turns. This is
     /// transient runtime state: CodingKeys deliberately omit it so prompt text
@@ -30,6 +39,12 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     /// archived_sessions root. Persisted so a relaunch never presents an
     /// archived result as immediately resumable.
     var isArchived: Bool
+    /// Compact, source-derived Codex classification. Claude records are always
+    /// top-level because Claude's nested subagent files are excluded by its
+    /// scanner's depth-bounded enumeration.
+    var codexProvenance: CodexSessionProvenance
+    /// Present only when a recognized Codex thread-spawn source supplies it.
+    var parentSessionID: String?
     var cwd: String
     var projectName: String
     var gitBranch: String?
@@ -40,7 +55,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var fileSize: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case id, agent, sessionID, fallbackTitle, firstPrompt, isArchived, cwd, projectName
+        case id, agent, sessionID, fallbackTitle, firstPrompt, isArchived, codexProvenance, parentSessionID
+        case cwd, projectName
         case gitBranch, startedAt, lastActivityAt, filePath, fileSize
     }
 
@@ -55,6 +71,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         touchedFileBasePath: String? = nil,
         touchedFileHydrationGeneration: Int = 0,
         isArchived: Bool = false,
+        codexProvenance: CodexSessionProvenance = .topLevel,
+        parentSessionID: String? = nil,
         cwd: String,
         projectName: String,
         gitBranch: String?,
@@ -73,6 +91,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         self.touchedFileBasePath = touchedFileBasePath
         self.touchedFileHydrationGeneration = touchedFileHydrationGeneration
         self.isArchived = isArchived
+        self.codexProvenance = codexProvenance
+        self.parentSessionID = parentSessionID
         self.cwd = cwd
         self.projectName = projectName
         self.gitBranch = gitBranch
@@ -95,6 +115,10 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         touchedFileHydrationGeneration = 0
         // Valid pre-feature v6 caches contain active sessions only.
         isArchived = try values.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        codexProvenance = try values.decodeIfPresent(
+            CodexSessionProvenance.self, forKey: .codexProvenance) ?? .topLevel
+        parentSessionID = try values.decodeIfPresent(String.self, forKey: .parentSessionID)
+        if codexProvenance == .subagent { firstPrompt = nil }
         cwd = try values.decode(String.self, forKey: .cwd)
         projectName = try values.decode(String.self, forKey: .projectName)
         gitBranch = try values.decodeIfPresent(String.self, forKey: .gitBranch)
@@ -110,8 +134,12 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(agent, forKey: .agent)
         try values.encode(sessionID, forKey: .sessionID)
         try values.encodeIfPresent(fallbackTitle, forKey: .fallbackTitle)
-        try values.encodeIfPresent(firstPrompt, forKey: .firstPrompt)
+        if codexProvenance != .subagent {
+            try values.encodeIfPresent(firstPrompt, forKey: .firstPrompt)
+        }
         try values.encode(isArchived, forKey: .isArchived)
+        try values.encode(codexProvenance, forKey: .codexProvenance)
+        try values.encodeIfPresent(parentSessionID, forKey: .parentSessionID)
         try values.encode(cwd, forKey: .cwd)
         try values.encode(projectName, forKey: .projectName)
         try values.encodeIfPresent(gitBranch, forKey: .gitBranch)
@@ -183,6 +211,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
             gitBranch: gitBranch,
             sourceTitle: sourceTitle,
             isArchived: isArchived,
+            isSubagent: codexProvenance == .subagent,
             touchedFilePaths: includeTouchedFiles ? touchedFilePaths : []
         )
     }
@@ -201,6 +230,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         gitBranch: String? = nil,
         sourceTitle: String? = nil,
         isArchived: Bool = false,
+        isSubagent: Bool = false,
         touchedFilePaths: [String] = []
     ) -> String {
         var parts = [firstPrompt]
@@ -208,6 +238,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         parts.append(cwd)
         var metadata: [String] = []
         if isArchived { metadata.append("Archived") }
+        if isSubagent { metadata.append("Subagent") }
         if let gitBranch, !gitBranch.isEmpty { metadata.append(gitBranch) }
         if let sourceTitle, !sourceTitle.isEmpty { metadata.append(sourceTitle) }
         if !metadata.isEmpty { parts.append(metadata.joined(separator: " · ")) }

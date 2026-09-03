@@ -9,10 +9,11 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
-    /// v8: touched-file hydration state; v7: Codex git branch; v6: later prompt
+    /// v9: Codex provenance; v8: touched-file hydration state;
+    /// v7: Codex git branch; v6: later prompt
     /// preference and hydration state; v5: iconSources; v4: pendingGhostDeletions;
     /// v3: dirtyIDs; v2: head expansion
-    static let currentVersion = 8
+    static let currentVersion = 9
 
     var version: Int = currentVersion
     /// key = absolute session file path
