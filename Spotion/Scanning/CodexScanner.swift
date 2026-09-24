@@ -337,6 +337,9 @@ struct CodexScanner: SessionScanner {
         includeLaterPrompts: Bool,
         includeTouchedFiles: Bool
     ) -> ParseOutcome {
+        // A child's leading user_message may be inherited parent history and,
+        // with firstPrompt nil, nothing would exclude it from later prompts.
+        let includeLaterPrompts = includeLaterPrompts && record.codexProvenance != .subagent
         guard includeLaterPrompts || includeTouchedFiles else { return .record(record) }
         guard let lines = try? JSONLReader.tailLines(
             of: URL(fileURLWithPath: file.path),

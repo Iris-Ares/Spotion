@@ -8,7 +8,13 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Confirmed Codex subagent child sessions (classified from `session_meta`
+  `source`) stay out of Spotlight, menu recents, suggestions, and *Continue
+  Latest* by default. An off-by-default *Include Codex subagent sessions*
+  setting (Settings → Index) shows them with a visible *Subagent* label
+  ([#59](https://github.com/Iris-Ares/Spotion/pull/59)).
 
 ## [0.3.0] - 2026-09-02
 

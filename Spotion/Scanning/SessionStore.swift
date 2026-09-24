@@ -98,7 +98,8 @@ actor SessionStore {
         historyWindow: SpotlightHistoryWindow = .all,
         now: Date = Date(),
         pinnedSessionsURL: URL? = nil,
-        aliasesURL: URL? = nil
+        aliasesURL: URL? = nil,
+        includeCodexSubagents: Bool = false
     ) {
         self.cacheURL = cacheURL
         self.codexScanner = codexScanner
@@ -118,6 +119,9 @@ actor SessionStore {
                 ?? cacheURL.deletingLastPathComponent().appendingPathComponent("session-aliases-v1.json"))
         self.historyWindow = historyWindow
         historyReferenceDate = now
+        // Entity queries may run before the first refresh; honor the saved
+        // opt-in immediately instead of hiding cached children until then.
+        self.includeCodexSubagents = includeCodexSubagents
     }
 
     // MARK: - Lifecycle

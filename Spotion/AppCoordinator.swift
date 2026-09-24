@@ -67,7 +67,8 @@ final class AppCoordinator {
             claudeScanner: ClaudeScanner(),
             historyWindow: SpotionSettings.spotlightHistoryWindow,
             pinnedSessionsURL: appSupport.appendingPathComponent("pinned-sessions-v1.json"),
-            aliasesURL: appSupport.appendingPathComponent("session-aliases-v1.json")
+            aliasesURL: appSupport.appendingPathComponent("session-aliases-v1.json"),
+            includeCodexSubagents: SpotionSettings.includeCodexSubagentSessions
         )
         savedProjectStore = SavedProjectStore(
             fileURL: appSupport.appendingPathComponent("saved-quick-create-projects-v1.json"))
