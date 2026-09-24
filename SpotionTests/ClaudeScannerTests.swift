@@ -169,6 +169,25 @@ import Testing
         #expect(record.firstPrompt == "真正的问题")
     }
 
+    /// Claude desktop 2.7x prepends its worktree notice to the user's own
+    /// message; the prompt after the block must be indexed, the block not.
+    @Test func promptsSurviveInjectedSystemReminderBlocks() throws {
+        let reminder = "<system-reminder>\\nYou are operating in a git worktree.\\nWorktree path: /tmp/proj\\n</system-reminder>\\n\\n"
+        let home = try makeHome(lines: [
+            Self.queueOp,
+            Self.user(reminder + "修复搜索"),
+            Self.user(reminder),
+            Self.user(reminder + "再看性能" + reminder + "<system-reminder>dangling"),
+        ])
+        let scanner = ClaudeScanner(claudeHome: home)
+        let file = try #require(scanner.enumerateFiles()?.first)
+        let record = try #require(scanner.parse(file, includeLaterPrompts: true).record)
+
+        #expect(record.firstPrompt == "修复搜索")
+        #expect(record.laterPromptSnippets == ["再看性能 <system-reminder>dangling"])
+        #expect(!(record.firstPrompt ?? "").contains("worktree"))
+    }
+
     @Test func blockContentConcatenatesTextBlocksOnly() throws {
         let home = try makeHome(lines: [Self.userWithBlocks])
         let record = try firstRecord(home: home)

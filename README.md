@@ -91,6 +91,8 @@ Homebrew installs stay out of Sparkle's way — the cask is marked `auto_updates
 - At least one agent CLI whose sessions you want to index: [Codex CLI](https://developers.openai.com/codex/cli) and/or [Claude Code](https://code.claude.com).
 - Optional: [Ghostty](https://ghostty.org) as the launch terminal, and/or the [Claude](https://claude.ai/download) / [ChatGPT](https://chatgpt.com/download) desktop apps as launch targets.
 
+Last verified on 2026-09-24 against macOS 26, Claude Code 2.1.232, Claude.app 2.7032, Codex CLI 0.155, and ChatGPT.app 26.915. Both agents' formats are internal, so this line is the support statement: if a newer agent breaks indexing or opening, please open an issue with the version.
+
 ## Build from source
 
 Takes about a minute:
@@ -143,6 +145,8 @@ flowchart LR
 | **Titles** | `~/.codex/session_index.jsonl` (`thread_name`) | Title records near the file tail: custom title → AI title → last prompt |
 | **Fallbacks** | First user message → project name | First user message → project name |
 
+Claude Code and the Claude desktop app (2.7x) prepend injected context — a `<system-reminder>` block with the worktree notice or hook output — to the user's own message; Spotion strips those blocks before deciding whether a message is a real prompt, so what you typed is what gets indexed (slash-command wrappers and caveat notes are still skipped).
+
 Reads are strictly bounded: scanners read an expanding head window (up to 4 MB) for metadata and the first real prompt, and a tail window (up to 512 KB) for Claude titles and opt-in metadata — multi-hundred-MB transcripts are never loaded whole. Parsed results are cached in `~/Library/Application Support/Spotion/` and re-parsed only when a file's size or mtime changes. Touched-file paths are transient: Spotion donates at most 20 recent, distinct project-contained paths and their basenames to the local Spotlight index, but never writes them to its scan cache. Shell commands, patches, prose, tool output, reasoning, attachments, and paths outside the session project are excluded.
 
 Sessions are donated to a named CoreSpotlight index as App Entities, so Spotlight gets full semantic results (title, project subtitle, open action) rather than plain file matches. Active Codex records always win if the same stable ID appears in both roots, and the conflict is reported instead of donated twice. A FSEvents watcher on both active and archived agent data directories triggers incremental refreshes; deletions, agent toggles, and system reindex requests are all reconciled against a persisted index state, with durable retries if the Spotlight service misbehaves.
@@ -152,7 +156,7 @@ Sessions are donated to a named CoreSpotlight index as App Entities, so Spotligh
 Each agent can independently open sessions in the **terminal CLI** (default) or its **desktop app** — *Settings → General → 打开方式 (Open with)*:
 
 - **CLI** — Spotion resolves the agent binary (override → known install paths → Homebrew paths → login-shell `PATH`), then runs `codex resume <id>` or `claude --resume <id>` in your chosen terminal. `claude --resume` only finds sessions from the directory they started in, so Spotion always `cd`s first — this is also why a Claude session whose directory was deleted can't be resumed in CLI mode.
-- **Desktop app** — Spotion opens `codex://threads/<uuid>` or `claude://resume?session=<uuid>` with whatever app is registered for the scheme. Codex opens the thread in place. **Claude.app instead *imports* the CLI transcript** into a desktop-managed copy: the sidebar gains a second entry with an app-generated title, and the import rewrites the local transcript file (stripping thinking blocks and title records). Both are Claude.app behaviors outside Spotion's control; Spotion carries the previously indexed title forward so the Spotlight row keeps its name.
+- **Desktop app** — Spotion opens `codex://threads/<uuid>` or `claude://resume?session=<uuid>` with whatever app is registered for the scheme. Codex opens the thread in place. Claude.app (verified on 2.7032, which still handles `claude://resume`; its newer `claude://code/continue?session=` route takes the app's internal `local_…` id, so Spotion keeps `resume`) opens a session it already owns — started in its Code tab, or imported earlier — in place, in about a second. **A CLI-only session is *imported* once** into a desktop-managed copy: the import reads the whole transcript, checks workspace trust and git worktree state, may migrate the transcript to another project folder, and rewrites it (stripping thinking blocks and title records); the sidebar gains a second entry with an app-generated title. That first open takes a few seconds; later opens hit the owned-session path. All of this is Claude.app behavior outside Spotion's control; Spotion carries the previously indexed title forward so the Spotlight row keeps its name.
 
 An archived Codex result follows the same chosen launch mode only after confirmation, successful direct CLI unarchive, and a refresh that proves the active source is authoritative. Canceling or any command/refresh failure leaves the archived result indexed and does not open a terminal or app.
 
@@ -172,6 +176,8 @@ All preferences live in *Settings…* (via the menu-bar icon):
 
 **Sessions don't appear in Spotlight.** Run the self-check in *Settings → Index* (it queries CoreSpotlight directly, bypassing the Spotlight UI). The query is not scoped to Spotion's own items, so use a term distinctive to one of your sessions — an unusual word from its title, not something generic like "session". With a distinctive term, hits > 0 mean the donation landed and the problem is on the Spotlight side — check that Spotion is enabled in *System Settings → Spotlight*, or give the system indexer a moment. 0 hits mean the donation never landed — press *Rebuild Index*.
 
+**Enter takes several seconds before the app shows the session.** Spotion's own part is well under a second while it is running (measured: `open claude://…` returns in 0.3 s and Claude.app focuses an owned session about 1 s later). The seconds come from elsewhere: Spotion was quit from the menu bar, so macOS cold-launches it for every Spotlight action and nothing new is indexed in between (keep it running, or enable *launch at login*); Claude.app / ChatGPT.app is not running and has to cold-start; or it is the first open of a CLI-only session in Claude.app, which imports it ([see Launch modes](#launch-modes)).
+
 **Enter opens nothing / an error dialog about the binary.** The agent CLI wasn't found in the usual places. Set the explicit path in *Settings → Advanced* (find yours with `command -v codex` / `command -v claude`).
 
 **Terminal.app never opens.** Check *System Settings → Privacy & Security → Automation* → Spotion → Terminal. For Ghostty, the app must be at `/Applications/Ghostty.app`.
@@ -184,7 +190,7 @@ All preferences live in *Settings…* (via the menu-bar icon):
 
 - macOS 26+ only; there are no plans to backport (Spotlight Actions and the indexing APIs Spotion relies on are new in 26).
 - Both agents' session-file formats are officially internal and version-unstable. Spotion parses defensively and skips what it can't read, but an agent update could temporarily break indexing until Spotion adapts.
-- Opening a session in Claude.app duplicates it into a desktop-managed copy and rewrites the local transcript ([see above](#launch-modes)).
+- Opening a CLI-only session in Claude.app imports it once into a desktop-managed copy and rewrites the local transcript; sessions the app already owns open in place ([see above](#launch-modes)).
 - Sessions whose IDs aren't canonical UUIDs can't be deep-linked to desktop apps.
 - Opening an archived Codex session runs `codex unarchive <id>`, which exists in Codex CLI 0.136 and newer; older CLIs report a visible error and the session stays archived.
 - macOS allows at most 10 App Shortcuts per app, and Spotion is at that cap. *Fork Agent Session*, *Copy Session Resume Command*, and *Resume Claude Session from Pull Request* are therefore available as Spotlight actions and in the Shortcuts app, but have no Siri phrase.

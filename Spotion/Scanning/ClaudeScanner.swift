@@ -167,8 +167,8 @@ struct ClaudeScanner: SessionScanner {
             if startedAt == nil, let t = e.timestamp { startedAt = ISO8601.date(from: t) }
             if firstPrompt == nil, e.type == "user", e.isSidechain != true,
                e.message?.role == "user",
-               let text = e.message?.content?.plainText.trimmingCharacters(in: .whitespacesAndNewlines),
-               PromptSnippetPolicy.isRealPrompt(text) {
+               let raw = e.message?.content?.plainText,
+               let text = PromptSnippetPolicy.userText(raw) {
                 firstPrompt = String(text.prefix(300))
             }
             if cwd != nil, startedAt != nil, firstPrompt != nil { break }
@@ -220,8 +220,8 @@ struct ClaudeScanner: SessionScanner {
             if includeLaterPrompts,
                envelope.type == "user",
                envelope.message?.role == "user",
-               let text = envelope.message?.content?.plainText,
-               PromptSnippetPolicy.isRealPrompt(text) {
+               let raw = envelope.message?.content?.plainText,
+               let text = PromptSnippetPolicy.userText(raw) {
                 prompts.append(text)
             }
             if includeTouchedFiles,
@@ -261,9 +261,10 @@ struct ClaudeScanner: SessionScanner {
     }
 
     /// Excludes slash-command wrappers (<command-name>…) and the caveat notes
-    /// Claude Code injects.
+    /// Claude Code injects; injected <system-reminder> blocks are stripped
+    /// first (PromptSnippetPolicy.userText).
     static func looksLikeRealPrompt(_ text: String) -> Bool {
-        PromptSnippetPolicy.isRealPrompt(text)
+        PromptSnippetPolicy.userText(text) != nil
     }
 
     /// Tail scan starting at 64KB, doubling up to 512KB.

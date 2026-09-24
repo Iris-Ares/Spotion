@@ -8,6 +8,16 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Sessions started from the Claude desktop app (2.7x) were indexed without any
+  prompt text, so searching Spotlight for what you typed found nothing. Claude
+  now prepends a `<system-reminder>` block (worktree notice, hook output) to the
+  user's own first message, and Spotion's real-prompt filter rejected the whole
+  message. Injected blocks are stripped before the check, for the first prompt
+  and the opt-in later prompts; the scan cache advances to v10 so every session
+  is reparsed once.
+
 ### Changed
 
 - Confirmed Codex subagent child sessions (classified from `session_meta`
@@ -15,6 +25,12 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
   Latest* by default. An off-by-default *Include Codex subagent sessions*
   setting (Settings → Index) shows them with a visible *Subagent* label
   ([#59](https://github.com/Iris-Ares/Spotion/pull/59)).
+- Platform follow-up (verified 2026-09-24): Claude.app 2.7032 still handles
+  `claude://resume?session=` and opens app-owned sessions in place without
+  re-importing; Claude Code 2.1.232 keeps `--resume`, `--fork-session`,
+  `--from-pr`; Codex CLI 0.155 keeps `resume`, `fork`, `unarchive`; ChatGPT.app
+  26.915 keeps `codex://threads/`. README documents the support statement, the
+  import cost on first open, and why an open can take seconds.
 
 ## [0.3.0] - 2026-09-02
 
