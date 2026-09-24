@@ -269,7 +269,8 @@ final class AppCoordinator {
             now: started,
             includeTouchedFiles: SpotionSettings.searchTouchedFiles,
             includeArchivedCodex: SpotionSettings.includeArchivedCodexSessions,
-            includeCodexSubagents: SpotionSettings.includeCodexSubagentSessions
+            includeCodexSubagents: SpotionSettings.includeCodexSubagentSessions,
+            includeAssistantReplies: SpotionSettings.searchAssistantReplies
         )
         do {
             if !diff.upserts.isEmpty {

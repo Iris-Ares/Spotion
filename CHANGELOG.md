@@ -8,6 +8,15 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Off-by-default *Search recent assistant replies* (Settings → Index): up to five
+  recent visible assistant text snippets per session (300 characters each,
+  1,500 total) are donated only to the local Spotlight content description.
+  Thinking, tool calls/results, images, sidechains, and unknown blocks are never
+  indexed, and the snippets never enter Spotion's scan cache
+  ([#58](https://github.com/Iris-Ares/Spotion/pull/58)).
+
 ### Changed
 
 - Confirmed Codex subagent child sessions (classified from `session_meta`

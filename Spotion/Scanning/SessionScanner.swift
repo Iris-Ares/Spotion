@@ -46,7 +46,8 @@ protocol SessionScanner: Sendable {
     func parse(
         _ file: ScannedFile,
         includeLaterPrompts: Bool,
-        includeTouchedFiles: Bool
+        includeTouchedFiles: Bool,
+        includeAssistantReplies: Bool
     ) -> ParseOutcome
 }
 
@@ -55,11 +56,31 @@ extension SessionScanner {
     /// default: neither later prompts nor touched-file paths are read or
     /// retained.
     func parse(_ file: ScannedFile) -> ParseOutcome {
-        parse(file, includeLaterPrompts: false, includeTouchedFiles: false)
+        parse(
+            file,
+            includeLaterPrompts: false,
+            includeTouchedFiles: false,
+            includeAssistantReplies: false)
     }
 
     func parse(_ file: ScannedFile, includeLaterPrompts: Bool) -> ParseOutcome {
-        parse(file, includeLaterPrompts: includeLaterPrompts, includeTouchedFiles: false)
+        parse(
+            file,
+            includeLaterPrompts: includeLaterPrompts,
+            includeTouchedFiles: false,
+            includeAssistantReplies: false)
+    }
+
+    func parse(
+        _ file: ScannedFile,
+        includeLaterPrompts: Bool,
+        includeTouchedFiles: Bool
+    ) -> ParseOutcome {
+        parse(
+            file,
+            includeLaterPrompts: includeLaterPrompts,
+            includeTouchedFiles: includeTouchedFiles,
+            includeAssistantReplies: false)
     }
 
     func statted(_ url: URL) -> ScannedFile? {

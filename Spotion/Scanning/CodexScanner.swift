@@ -224,6 +224,22 @@ struct CodexScanner: SessionScanner {
         var payload: Payload
     }
 
+    private struct AssistantMessageLine: Decodable {
+        var type: String?
+        struct Payload: Decodable {
+            struct ContentBlock: Decodable {
+                var type: String?
+                var text: String?
+            }
+
+            var type: String?
+            var role: String?
+            var phase: String?
+            var content: [ContentBlock]?
+        }
+        var payload: Payload
+    }
+
     private struct FileToolArguments: Decodable {
         var path: String?
         var file_path: String?
@@ -236,7 +252,8 @@ struct CodexScanner: SessionScanner {
     func parse(
         _ file: ScannedFile,
         includeLaterPrompts: Bool,
-        includeTouchedFiles: Bool
+        includeTouchedFiles: Bool,
+        includeAssistantReplies: Bool
     ) -> ParseOutcome {
         var cap = 512 * 1024
         var best: SessionRecord?
@@ -259,7 +276,8 @@ struct CodexScanner: SessionScanner {
                     to: record,
                     file: file,
                     includeLaterPrompts: includeLaterPrompts,
-                    includeTouchedFiles: includeTouchedFiles
+                    includeTouchedFiles: includeTouchedFiles,
+                    includeAssistantReplies: includeAssistantReplies
                 )
             }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
@@ -268,7 +286,8 @@ struct CodexScanner: SessionScanner {
                     to: best,
                     file: file,
                     includeLaterPrompts: includeLaterPrompts,
-                    includeTouchedFiles: includeTouchedFiles
+                    includeTouchedFiles: includeTouchedFiles,
+                    includeAssistantReplies: includeAssistantReplies
                 )
             }
             cap *= 2
@@ -335,20 +354,27 @@ struct CodexScanner: SessionScanner {
         to record: SessionRecord,
         file: ScannedFile,
         includeLaterPrompts: Bool,
-        includeTouchedFiles: Bool
+        includeTouchedFiles: Bool,
+        includeAssistantReplies: Bool
     ) -> ParseOutcome {
         // A child's leading user_message may be inherited parent history and,
         // with firstPrompt nil, nothing would exclude it from later prompts.
         let includeLaterPrompts = includeLaterPrompts && record.codexProvenance != .subagent
-        guard includeLaterPrompts || includeTouchedFiles else { return .record(record) }
+        guard includeLaterPrompts || includeTouchedFiles || includeAssistantReplies else {
+            return .record(record)
+        }
         guard let lines = try? JSONLReader.tailLines(
             of: URL(fileURLWithPath: file.path),
-            cap: max(PromptSnippetPolicy.tailReadCap, TouchedFilePolicy.tailReadCap)
+            cap: max(
+                PromptSnippetPolicy.tailReadCap,
+                TouchedFilePolicy.tailReadCap,
+                AssistantReplySnippetPolicy.tailReadCap)
         ) else { return .ioFailure }
 
         let decoder = JSONDecoder()
         var prompts: [String] = []
         var toolPaths: [String] = []
+        var assistantReplies: [String] = []
         for data in lines {
             if includeLaterPrompts,
                let event = try? decoder.decode(EventLine.self, from: data),
@@ -359,6 +385,10 @@ struct CodexScanner: SessionScanner {
             }
             if includeTouchedFiles, let path = Self.structuredFilePath(from: data, decoder: decoder) {
                 toolPaths.append(path)
+            }
+            if includeAssistantReplies,
+               let reply = Self.visibleAssistantReply(from: data, decoder: decoder) {
+                assistantReplies.append(reply)
             }
         }
         var updated = record
@@ -376,7 +406,29 @@ struct CodexScanner: SessionScanner {
         if includeTouchedFiles {
             updated.touchedFileHydrationGeneration = TouchedFilePolicy.extractionGeneration
         }
+        if includeAssistantReplies {
+            updated.assistantReplySnippets = AssistantReplySnippetPolicy.mostRecent(assistantReplies)
+            updated.assistantReplyHydrationGeneration = AssistantReplySnippetPolicy.extractionGeneration
+        }
         return .record(updated)
+    }
+
+    /// Only final assistant message text is allowlisted. Reasoning summaries,
+    /// tool calls/results, events, user/context messages, and unknown blocks do
+    /// not satisfy this exact response-item shape.
+    private static func visibleAssistantReply(from data: Data, decoder: JSONDecoder) -> String? {
+        // The envelope type is part of the allowlist: a future non-response
+        // record whose payload merely resembles a message must not be indexed.
+        guard let line = try? decoder.decode(AssistantMessageLine.self, from: data),
+              line.type == "response_item",
+              line.payload.type == "message",
+              line.payload.role == "assistant",
+              line.payload.phase == nil || line.payload.phase == "final_answer",
+              let blocks = line.payload.content else { return nil }
+        let text = blocks.compactMap { block in
+            block.type == "output_text" ? block.text : nil
+        }.joined(separator: "\n")
+        return text.isEmpty ? nil : text
     }
 
     /// Codex records function-call arguments separately from tool output. Only
