@@ -8,6 +8,10 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.1] - 2026-09-24
+
 ### Fixed
 
 - Sessions started from the Claude desktop app (2.7x) were indexed without any
@@ -16,7 +20,7 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
   user's own first message, and Spotion's real-prompt filter rejected the whole
   message. Injected blocks are stripped before the check, for the first prompt
   and the opt-in later prompts; the scan cache advances to v10 so every session
-  is reparsed once.
+  is reparsed once ([#61](https://github.com/Iris-Ares/Spotion/pull/61)).
 
 ### Changed
 
@@ -30,7 +34,8 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
   re-importing; Claude Code 2.1.232 keeps `--resume`, `--fork-session`,
   `--from-pr`; Codex CLI 0.155 keeps `resume`, `fork`, `unarchive`; ChatGPT.app
   26.915 keeps `codex://threads/`. README documents the support statement, the
-  import cost on first open, and why an open can take seconds.
+  import cost on first open, and why an open can take seconds
+  ([#61](https://github.com/Iris-Ares/Spotion/pull/61)).
 
 ## [0.3.0] - 2026-09-02
 
@@ -168,6 +173,7 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
   Spotion's own icon), kept fresh when handler apps are installed, removed, or
   updated ([#10](https://github.com/Iris-Ares/Spotion/pull/10)).
 
-[Unreleased]: https://github.com/Iris-Ares/Spotion/compare/v0.3.0...main
+[Unreleased]: https://github.com/Iris-Ares/Spotion/compare/v0.3.1...main
+[0.3.1]: https://github.com/Iris-Ares/Spotion/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Iris-Ares/Spotion/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Iris-Ares/Spotion/releases/tag/v0.2.0
