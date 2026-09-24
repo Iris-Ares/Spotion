@@ -310,6 +310,23 @@ enum PromptSnippetPolicy {
         return !trimmed.isEmpty && !trimmed.hasPrefix("<") && !trimmed.hasPrefix("Caveat:")
     }
 
+    /// Claude Code / Claude desktop (2.7x) prepend injected context to the
+    /// user's own text *inside the same message* — a `<system-reminder>` block
+    /// (worktree notice, hook output) followed by the prompt. Judged raw, such
+    /// a message starts with "<" and is dropped whole, losing the prompt.
+    /// Returns the user's text with those blocks removed, or nil when nothing
+    /// real remains.
+    static func userText(_ text: String) -> String? {
+        var out = text
+        let open = "<system-reminder>", close = "</system-reminder>"
+        while let start = out.range(of: open) {
+            guard let end = out.range(of: close, range: start.upperBound..<out.endIndex) else { break }
+            out.removeSubrange(start.lowerBound..<end.upperBound)
+        }
+        let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return isRealPrompt(trimmed) ? trimmed : nil
+    }
+
     /// Returns newest-first snippets. The aggregate budget includes newline
     /// separators exactly as donated to Spotlight.
     static func mostRecent(_ prompts: [String], excluding firstPrompt: String?) -> [String] {
