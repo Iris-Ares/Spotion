@@ -16,6 +16,11 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
   Thinking, tool calls/results, images, sidechains, and unknown blocks are never
   indexed, and the snippets never enter Spotion's scan cache
   ([#58](https://github.com/Iris-Ares/Spotion/pull/58)).
+- *Additional agent homes* (Settings → Index): index sessions from extra
+  `CODEX_HOME` / `CLAUDE_CONFIG_DIR` directories alongside the defaults. Results
+  show their source home, CLI resume passes the matching environment variable to
+  the child command only, and native-app resume fails visibly for non-default
+  homes ([#34](https://github.com/Iris-Ares/Spotion/pull/34)).
 
 ### Changed
 

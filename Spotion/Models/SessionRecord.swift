@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum CodexSessionProvenance: String, Codable, Sendable, Hashable {
@@ -14,6 +15,11 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var agent: AgentKind
     /// Raw session id passed to `codex resume` / `claude --resume`
     var sessionID: String
+    /// Agent state directory that owns this transcript. Default-home sessions
+    /// retain their legacy identifiers; additional homes are namespaced by a
+    /// deterministic digest so matching UUIDs cannot collide in Spotlight.
+    var agentHomePath: String
+    var isDefaultAgentHome: Bool
     /// claude: title parsed from the tail title records; always nil for codex
     /// (codex titles live in session_index.jsonl)
     var fallbackTitle: String?
@@ -61,7 +67,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var fileSize: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case id, agent, sessionID, fallbackTitle, firstPrompt, isArchived, codexProvenance, parentSessionID
+        case id, agent, sessionID, agentHomePath, isDefaultAgentHome
+        case fallbackTitle, firstPrompt, isArchived, codexProvenance, parentSessionID
         case cwd, projectName
         case gitBranch, startedAt, lastActivityAt, filePath, fileSize
     }
@@ -70,6 +77,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         id: String,
         agent: AgentKind,
         sessionID: String,
+        agentHomePath: String? = nil,
+        isDefaultAgentHome: Bool = true,
         fallbackTitle: String?,
         firstPrompt: String?,
         laterPromptSnippets: [String],
@@ -92,6 +101,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         self.id = id
         self.agent = agent
         self.sessionID = sessionID
+        self.agentHomePath = agentHomePath ?? AgentHomePathPolicy.defaultPath(for: agent)
+        self.isDefaultAgentHome = isDefaultAgentHome
         self.fallbackTitle = fallbackTitle
         self.firstPrompt = firstPrompt
         self.laterPromptSnippets = laterPromptSnippets
@@ -117,6 +128,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         id = try values.decode(String.self, forKey: .id)
         agent = try values.decode(AgentKind.self, forKey: .agent)
         sessionID = try values.decode(String.self, forKey: .sessionID)
+        agentHomePath = try values.decode(String.self, forKey: .agentHomePath)
+        isDefaultAgentHome = try values.decode(Bool.self, forKey: .isDefaultAgentHome)
         fallbackTitle = try values.decodeIfPresent(String.self, forKey: .fallbackTitle)
         firstPrompt = try values.decodeIfPresent(String.self, forKey: .firstPrompt)
         laterPromptSnippets = []
@@ -145,6 +158,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(id, forKey: .id)
         try values.encode(agent, forKey: .agent)
         try values.encode(sessionID, forKey: .sessionID)
+        try values.encode(agentHomePath, forKey: .agentHomePath)
+        try values.encode(isDefaultAgentHome, forKey: .isDefaultAgentHome)
         try values.encodeIfPresent(fallbackTitle, forKey: .fallbackTitle)
         if codexProvenance != .subagent {
             try values.encodeIfPresent(firstPrompt, forKey: .firstPrompt)
@@ -161,8 +176,24 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(fileSize, forKey: .fileSize)
     }
 
-    static func makeID(agent: AgentKind, sessionID: String) -> String {
-        "\(agent.rawValue):\(sessionID)"
+    static func makeID(
+        agent: AgentKind,
+        sessionID: String,
+        agentHomePath: String? = nil,
+        isDefaultAgentHome: Bool = true
+    ) -> String {
+        let legacy = "\(agent.rawValue):\(sessionID)"
+        guard !isDefaultAgentHome else { return legacy }
+        let normalized = AgentHomePathPolicy.normalize(agentHomePath ?? "") ?? (agentHomePath ?? "")
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+            .prefix(12)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "\(legacy):home:\(digest)"
+    }
+
+    var sourceHomeDisplayPath: String? {
+        isDefaultAgentHome ? nil : AgentHomePathPolicy.displayPath(agentHomePath)
     }
 
     func spotlightKeywords(sourceTitle: String? = nil, includeTouchedFiles: Bool = false) -> [String] {
@@ -174,6 +205,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
             gitBranch: gitBranch,
             cwd: cwd,
             sourceTitle: sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             touchedFilePaths: touchedFilePaths,
             includeTouchedFiles: includeTouchedFiles
         )
@@ -187,6 +219,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         gitBranch: String?,
         cwd: String,
         sourceTitle: String? = nil,
+        sourceHomeDisplayPath: String? = nil,
         touchedFilePaths: [String] = [],
         includeTouchedFiles: Bool = false,
         isArchived: Bool = false
@@ -195,6 +228,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         // replaces the visible title.
         var candidates = [projectName, agent.displayName, agent.rawValue, "session"]
         if let sourceTitle { candidates.append(sourceTitle) }
+        if let sourceHomeDisplayPath { candidates.append(sourceHomeDisplayPath) }
         if let gitBranch { candidates.append(gitBranch) }
         candidates += cwd.split(separator: "/").map(String.init)
         candidates += [sessionID, id]
@@ -225,6 +259,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
             includeAssistantReplies: includeAssistantReplies,
             gitBranch: gitBranch,
             sourceTitle: sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             isArchived: isArchived,
             isSubagent: codexProvenance == .subagent,
             touchedFilePaths: includeTouchedFiles ? touchedFilePaths : []
@@ -246,6 +281,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         includeAssistantReplies: Bool = false,
         gitBranch: String? = nil,
         sourceTitle: String? = nil,
+        sourceHomeDisplayPath: String? = nil,
         isArchived: Bool = false,
         isSubagent: Bool = false,
         touchedFilePaths: [String] = []
@@ -259,6 +295,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         if isSubagent { metadata.append("Subagent") }
         if let gitBranch, !gitBranch.isEmpty { metadata.append(gitBranch) }
         if let sourceTitle, !sourceTitle.isEmpty { metadata.append(sourceTitle) }
+        if let sourceHomeDisplayPath, !sourceHomeDisplayPath.isEmpty { metadata.append(sourceHomeDisplayPath) }
         if !metadata.isEmpty { parts.append(metadata.joined(separator: " · ")) }
         if !touchedFilePaths.isEmpty { parts.append(touchedFilePaths.joined(separator: " ")) }
         return parts.compactMap { $0 }.joined(separator: "\n")
