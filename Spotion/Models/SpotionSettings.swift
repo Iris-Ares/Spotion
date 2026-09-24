@@ -110,6 +110,12 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "includeArchivedCodexSessions") }
     }
 
+    /// Confirmed Codex child threads are hidden unless explicitly requested.
+    static var includeCodexSubagentSessions: Bool {
+        get { d.bool(forKey: "includeCodexSubagentSessions") }
+        set { d.set(newValue, forKey: "includeCodexSubagentSessions") }
+    }
+
     private static func nonEmpty(_ s: String?) -> String? {
         guard let s, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return s

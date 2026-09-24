@@ -71,18 +71,116 @@ import Testing
         id: String,
         cwd: String,
         day: String,
-        mtime: Date
+        mtime: Date,
+        extra: String = ""
     ) throws -> URL {
         let relative = "sessions/2026/08/\(day)/rollout-2026-08-\(day)T10-00-00-\(id).jsonl"
         let url = try TestSupport.write(
             [
-                CodexScannerTests.meta(cwd: cwd, id: id),
+                CodexScannerTests.meta(cwd: cwd, id: id, extra: extra),
                 CodexScannerTests.userMessage("selection fixture"),
             ].joined(separator: "\n") + "\n",
             to: env.codexHome.appendingPathComponent(relative)
         )
         try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
         return url
+    }
+
+    @Test func codexSubagentsAreExcludedEverywhereByDefaultAndToggleDurably() async throws {
+        let env = try makeEnv()
+        let topLevel = "019fd165-b969-7562-bd4e-0fa4a6104c41"
+        let child = "019fd165-b969-7562-bd4e-0fa4a6104c42"
+        let userFork = "019fd165-b969-7562-bd4e-0fa4a6104c43"
+        let base = Date(timeIntervalSince1970: 1_780_000_000)
+        try writeCodexSelectionFixture(
+            env, id: topLevel, cwd: "/work/top", day: "11", mtime: base,
+            extra: ",\"source\":\"vscode\"")
+        try writeCodexSelectionFixture(
+            env, id: userFork, cwd: "/work/fork", day: "12", mtime: base.addingTimeInterval(60),
+            extra: ",\"source\":\"vscode\",\"forked_from_id\":\"\(topLevel)\"")
+        try writeCodexSelectionFixture(
+            env, id: child, cwd: "/work/child-only", day: "10", mtime: base.addingTimeInterval(120),
+            extra: CodexScannerTests.spawnedSubagentSource(parentID: topLevel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex])
+        #expect(Set(initial.upserts.map(\.sessionID)) == [topLevel, userFork])
+        #expect(await store.record(id: "codex:\(child)") == nil)
+        #expect(await store.all(matching: child).isEmpty)
+        #expect(await store.menuSections(recentLimit: 10).recent.allSatisfy {
+            $0.record.sessionID != child
+        })
+        #expect(await store.distinctProjects().map(\.cwd).contains("/work/child-only") == false)
+        #expect(await store.latest(agent: .codex, projectCWD: nil)?.sessionID == userFork)
+        let initialStats = await store.lastStats
+        #expect(initialStats.codexCount == 3)
+        #expect(initialStats.codexTopLevelCount == 2)
+        #expect(initialStats.codexSubagentCount == 1)
+        #expect(initialStats.codexUnrecognizedProvenanceCount == 0)
+        await store.markIndexed(initial)
+
+        // Sidecar state may be attached while the child is filtered, but it
+        // cannot bypass the provenance policy.
+        #expect(try await store.setPinned(id: "codex:\(child)", pinned: true) == .changed)
+        #expect(try await store.setAlias(id: "codex:\(child)", alias: "Delegated audit") == .changed)
+        #expect(await store.menuSections(recentLimit: 10).pinned.isEmpty)
+
+        let enabled = await store.refresh(enabledAgents: [.codex], includeCodexSubagents: true)
+        let enabledChild = try #require(enabled.upserts.first(where: { $0.sessionID == child }))
+        #expect(enabledChild.codexProvenance == .subagent)
+        #expect(enabledChild.parentSessionID == topLevel)
+        #expect(enabledChild.spotlightContentDescription(includeLaterPrompts: false).contains("Subagent"))
+        #expect(await store.record(id: "codex:\(child)") != nil)
+        #expect(await store.all(matching: "Delegated audit").map(\.sessionID) == [child])
+        #expect(await store.menuSections(recentLimit: 10).pinned.map(\.title) == ["Delegated audit"])
+        #expect(await store.distinctProjects().map(\.cwd).contains("/work/child-only"))
+
+        // An unacknowledged donation retries rather than stabilizing early.
+        let enabledRetry = await store.refresh(enabledAgents: [.codex], includeCodexSubagents: true)
+        #expect(enabledRetry.upserts.map(\.sessionID).contains(child))
+        await store.markIndexed(enabledRetry)
+        #expect(await store.refresh(enabledAgents: [.codex], includeCodexSubagents: true).isEmpty)
+
+        let disabled = await store.refresh(enabledAgents: [.codex], includeCodexSubagents: false)
+        #expect(disabled.deletedIDs == ["codex:\(child)"])
+        #expect(await store.record(id: "codex:\(child)") == nil)
+
+        // Simulate an interrupted deletion and relaunch: indexedIDs keeps the
+        // delete obligation, while pin and alias state remain intact.
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let disabledRetry = await relaunched.refresh(enabledAgents: [.codex], includeCodexSubagents: false)
+        #expect(disabledRetry.deletedIDs == ["codex:\(child)"])
+        await relaunched.markIndexed(disabledRetry)
+        #expect(await relaunched.refresh(enabledAgents: [.codex], includeCodexSubagents: false).isEmpty)
+
+        let reenabled = await relaunched.refresh(enabledAgents: [.codex], includeCodexSubagents: true)
+        #expect(reenabled.upserts.map(\.sessionID) == [child])
+        #expect(await relaunched.menuSections(recentLimit: 10).pinned.map(\.title) == ["Delegated audit"])
+    }
+
+    @Test func unrecognizedCodexProvenanceFailsOpenWithBoundedDiagnostics() async throws {
+        let env = try makeEnv()
+        try writeCodexSelectionFixture(
+            env,
+            id: CodexScannerTests.uuid,
+            cwd: "/work/future",
+            day: "14",
+            mtime: Date(timeIntervalSince1970: 1_780_000_000),
+            extra: ",\"source\":{\"future_source\":{\"task_payload\":\"DO_NOT_REPORT\"}}")
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let diff = await store.refresh(enabledAgents: [.codex])
+        #expect(diff.upserts.map(\.sessionID) == [CodexScannerTests.uuid])
+        #expect(diff.upserts.first?.codexProvenance == .unrecognized)
+        let stats = await store.lastStats
+        #expect(stats.codexUnrecognizedProvenanceCount == 1)
+        let report = await store.scanReport()
+        #expect(report.contains("unrecognizedCodex=1"))
+        #expect(!report.contains("DO_NOT_REPORT"))
+        #expect(!report.contains("future_source"))
     }
 
     @discardableResult
