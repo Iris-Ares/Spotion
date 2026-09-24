@@ -8,6 +8,9 @@ import Observation
 @Observable
 final class UIState {
     var codexCount = 0
+    var codexTopLevelCount = 0
+    var codexSubagentCount = 0
+    var codexUnrecognizedProvenanceCount = 0
     var archivedCodexCount = 0
     var archiveConflicts = 0
     var claudeCount = 0
@@ -64,7 +67,8 @@ final class AppCoordinator {
             claudeScanner: ClaudeScanner(),
             historyWindow: SpotionSettings.spotlightHistoryWindow,
             pinnedSessionsURL: appSupport.appendingPathComponent("pinned-sessions-v1.json"),
-            aliasesURL: appSupport.appendingPathComponent("session-aliases-v1.json")
+            aliasesURL: appSupport.appendingPathComponent("session-aliases-v1.json"),
+            includeCodexSubagents: SpotionSettings.includeCodexSubagentSessions
         )
         savedProjectStore = SavedProjectStore(
             fileURL: appSupport.appendingPathComponent("saved-quick-create-projects-v1.json"))
@@ -264,7 +268,8 @@ final class AppCoordinator {
             historyWindow: SpotionSettings.spotlightHistoryWindow,
             now: started,
             includeTouchedFiles: SpotionSettings.searchTouchedFiles,
-            includeArchivedCodex: SpotionSettings.includeArchivedCodexSessions
+            includeArchivedCodex: SpotionSettings.includeArchivedCodexSessions,
+            includeCodexSubagents: SpotionSettings.includeCodexSubagentSessions
         )
         do {
             if !diff.upserts.isEmpty {
@@ -298,6 +303,9 @@ final class AppCoordinator {
 
         let stats = await store.lastStats
         uiState.codexCount = stats.codexCount
+        uiState.codexTopLevelCount = stats.codexTopLevelCount
+        uiState.codexSubagentCount = stats.codexSubagentCount
+        uiState.codexUnrecognizedProvenanceCount = stats.codexUnrecognizedProvenanceCount
         uiState.archivedCodexCount = stats.archivedCodexCount
         uiState.archiveConflicts = stats.archiveConflicts
         uiState.claudeCount = stats.claudeCount

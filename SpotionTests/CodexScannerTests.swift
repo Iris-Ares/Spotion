@@ -10,6 +10,10 @@ import Testing
         return "{\"timestamp\":\"2026-08-05T10:08:52.613Z\",\"type\":\"session_meta\",\"payload\":{\(idPart)\"timestamp\":\"2026-08-05T10:08:52.613Z\",\"cwd\":\"\(cwd)\"\(extra)}}"
     }
 
+    static func spawnedSubagentSource(parentID: String = "019fd165-b969-7562-bd4e-0fa4a6104c39") -> String {
+        ",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"\(parentID)\",\"depth\":1,\"agent_nickname\":\"Scout\"}}}"
+    }
+
     static let taskStarted =
         "{\"timestamp\":\"2026-08-05T10:08:53.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"t1\"}}"
 
@@ -64,6 +68,56 @@ import Testing
         #expect(record.firstPrompt == "修复登录 bug")
         #expect(record.startedAt != nil)
         #expect(record.laterPromptSnippets.isEmpty)
+        #expect(record.codexProvenance == .topLevel)
+        #expect(record.parentSessionID == nil)
+    }
+
+    @Test func classifiesOnlyRecognizedCodexSubagentSources() throws {
+        let parent = "019fd165-b969-7562-bd4e-0fa4a6104c39"
+        let cases: [(extra: String, provenance: CodexSessionProvenance, parent: String?)] = [
+            (",\"source\":\"vscode\"", .topLevel, nil),
+            (",\"source\":{\"custom\":\"chatgpt\"}", .topLevel, nil),
+            (",\"source\":\"cli\",\"forked_from_id\":\"\(parent)\"", .topLevel, nil),
+            (Self.spawnedSubagentSource(parentID: parent), .subagent, parent),
+            (",\"source\":{\"subagent\":{\"other\":\"automation\"}}", .subagent, nil),
+            (",\"source\":{\"subagent\":\"review\"}", .subagent, nil),
+            (",\"source\":\"future-host\"", .unrecognized, nil),
+            (",\"source\":null", .unrecognized, nil),
+            (",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"\(parent)\"}}}", .unrecognized, nil),
+            (",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"not-a-thread\",\"depth\":1}}}", .unrecognized, nil),
+            (",\"source\":{\"subagent\":{\"future_variant\":{}}}", .unrecognized, nil),
+            (",\"source\":{\"subagent\":\"review\",\"conflict\":true}", .unrecognized, nil),
+        ]
+
+        for item in cases {
+            let home = try makeHome(sessionLines: [
+                Self.meta(extra: item.extra),
+                Self.userMessage("session remains usable"),
+            ])
+            let record = try firstRecord(home: home)
+            #expect(record.codexProvenance == item.provenance)
+            #expect(record.parentSessionID == item.parent)
+            #expect(record.firstPrompt == (item.provenance == .subagent ? nil : "session remains usable"))
+        }
+    }
+
+    @Test func provenanceRoundTripPersistsOnlyCompactClassificationAndParent() throws {
+        let parent = "019fd165-b969-7562-bd4e-0fa4a6104c39"
+        let home = try makeHome(sessionLines: [
+            Self.meta(extra: Self.spawnedSubagentSource(parentID: parent)),
+            Self.userMessage("inherited child prompt"),
+        ])
+        let record = try firstRecord(home: home)
+        let data = try JSONEncoder().encode(record)
+        let encoded = String(decoding: data, as: UTF8.self)
+        let decoded = try JSONDecoder().decode(SessionRecord.self, from: data)
+
+        #expect(decoded.codexProvenance == .subagent)
+        #expect(decoded.parentSessionID == parent)
+        #expect(encoded.contains("\"codexProvenance\":\"subagent\""))
+        #expect(!encoded.contains("inherited child prompt"))
+        #expect(!encoded.contains("agent_nickname"))
+        #expect(!encoded.contains("thread_spawn"))
     }
 
     @Test func optInExtractsOnlyRecentRealUserPrompts() throws {
@@ -330,9 +384,12 @@ import Testing
         let encoded = try JSONEncoder().encode(original)
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "isArchived")
+        object.removeValue(forKey: "codexProvenance")
+        object.removeValue(forKey: "parentSessionID")
         let legacy = try JSONSerialization.data(withJSONObject: object)
         let decoded = try JSONDecoder().decode(SessionRecord.self, from: legacy)
         #expect(decoded.isArchived == false)
+        #expect(decoded.codexProvenance == .topLevel)
         #expect(decoded.id == original.id)
     }
 

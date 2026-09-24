@@ -15,11 +15,16 @@ Each release gets a dated section here that doubles as its GitHub Release notes.
   now prepends a `<system-reminder>` block (worktree notice, hook output) to the
   user's own first message, and Spotion's real-prompt filter rejected the whole
   message. Injected blocks are stripped before the check, for the first prompt
-  and the opt-in later prompts; the scan cache advances to v9 so every session
+  and the opt-in later prompts; the scan cache advances to v10 so every session
   is reparsed once.
 
 ### Changed
 
+- Confirmed Codex subagent child sessions (classified from `session_meta`
+  `source`) stay out of Spotlight, menu recents, suggestions, and *Continue
+  Latest* by default. An off-by-default *Include Codex subagent sessions*
+  setting (Settings → Index) shows them with a visible *Subagent* label
+  ([#59](https://github.com/Iris-Ares/Spotion/pull/59)).
 - Platform follow-up (verified 2026-09-24): Claude.app 2.7032 still handles
   `claude://resume?session=` and opens app-owned sessions in place without
   re-importing; Claude Code 2.1.232 keeps `--resume`, `--fork-session`,
