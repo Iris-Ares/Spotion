@@ -16,12 +16,14 @@ struct SessionEntity: AppEntity, IndexedEntity {
     var agent: AgentKind
     var firstPromptSnippet: String?
     var laterPromptSnippets: [String]
+    var assistantReplySnippets: [String]
     var touchedFilePaths: [String]
     var isArchived: Bool
     var codexProvenance: CodexSessionProvenance
     var gitBranch: String?
     var startedAt: Date?
     var lastActivityAt: Date
+    var sourceHomeDisplayPath: String?
 
     init(_ titled: TitledSession) {
         let record = titled.record
@@ -35,12 +37,14 @@ struct SessionEntity: AppEntity, IndexedEntity {
         self.agent = record.agent
         self.firstPromptSnippet = record.firstPrompt
         self.laterPromptSnippets = record.laterPromptSnippets
+        self.assistantReplySnippets = record.assistantReplySnippets
         self.touchedFilePaths = record.touchedFilePaths
         self.isArchived = record.isArchived
         self.codexProvenance = record.codexProvenance
         self.gitBranch = record.gitBranch
         self.startedAt = record.startedAt
         self.lastActivityAt = record.lastActivityAt
+        self.sourceHomeDisplayPath = record.sourceHomeDisplayPath
     }
 
     var displayRepresentation: DisplayRepresentation {
@@ -57,6 +61,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
         if isArchived { labels.append("Archived") }
         if codexProvenance == .subagent { labels.append("Subagent") }
         labels.append(contentsOf: [agent.displayName, projectName])
+        if let sourceHomeDisplayPath { labels.append(sourceHomeDisplayPath) }
         let subtitle = labels.joined(separator: " · ")
         return DisplayRepresentation(
             title: "\(title)",
@@ -75,10 +80,13 @@ struct SessionEntity: AppEntity, IndexedEntity {
         attributes.contentDescription = SessionRecord.spotlightContentDescription(
             firstPrompt: firstPromptSnippet,
             laterPrompts: laterPromptSnippets,
+            assistantReplies: assistantReplySnippets,
             cwd: cwd,
             includeLaterPrompts: SpotionSettings.searchLaterPrompts,
+            includeAssistantReplies: SpotionSettings.searchAssistantReplies,
             gitBranch: gitBranch,
             sourceTitle: sourceTitle == title ? nil : sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             isArchived: isArchived,
             isSubagent: codexProvenance == .subagent,
             touchedFilePaths: SpotionSettings.searchTouchedFiles ? touchedFilePaths : []
@@ -91,6 +99,7 @@ struct SessionEntity: AppEntity, IndexedEntity {
             gitBranch: gitBranch,
             cwd: cwd,
             sourceTitle: sourceTitle == title ? nil : sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             touchedFilePaths: touchedFilePaths,
             includeTouchedFiles: SpotionSettings.searchTouchedFiles,
             isArchived: isArchived

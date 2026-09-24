@@ -9,11 +9,12 @@ struct ScanCacheEntry: Codable, Sendable {
 }
 
 struct ScanCache: Codable, Sendable {
+    /// v11: source-home identity; v10: assistant-reply hydration state;
     /// v9: Codex provenance; v8: touched-file hydration state;
     /// v7: Codex git branch; v6: later prompt
     /// preference and hydration state; v5: iconSources; v4: pendingGhostDeletions;
     /// v3: dirtyIDs; v2: head expansion
-    static let currentVersion = 9
+    static let currentVersion = 11
 
     var version: Int = currentVersion
     /// key = absolute session file path
@@ -29,7 +30,7 @@ struct ScanCache: Codable, Sendable {
     /// nor indexedIDs (ghosts from system reindex requests or late zombie
     /// mutations). Retried every refresh until the deletion lands.
     var pendingGhostDeletions: Set<String> = []
-    /// codex sessionID → thread_name (from ~/.codex/session_index.jsonl)
+    /// source-aware Codex record id → thread_name (from each home's session_index.jsonl)
     var codexTitles: [String: String] = [:]
     /// AgentKind.rawValue → opaque fingerprint of the icon source last folded
     /// into the dirty set (donated thumbnails embed the handler app's icon, so
@@ -42,6 +43,11 @@ struct ScanCache: Codable, Sendable {
     /// Unchanged transcript paths still awaiting the opt-in reparse. A failed
     /// read or root enumeration leaves the path here for a later retry.
     var laterPromptPendingPaths: Set<String> = []
+    /// 0 means assistant-reply search is disabled. A positive generation
+    /// identifies the strict allowlisted extraction rules in use.
+    var assistantReplyExtractionGeneration = 0
+    /// Unchanged transcripts awaiting bounded assistant-reply hydration.
+    var assistantReplyPendingPaths: Set<String> = []
     /// 0 means touched-file indexing is disabled. A positive generation
     /// changes when allowlisted tool schemas or normalization behavior changes.
     var touchedFileExtractionGeneration = 0

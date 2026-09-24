@@ -26,26 +26,38 @@ enum CodexSessionSource: Sendable {
 /// ~/.codex/session_index.jsonl ({id, thread_name, updated_at}).
 struct CodexScanner: SessionScanner {
     let agent: AgentKind = .codex
+    let agentHome: URL
+    let isDefaultAgentHome: Bool
     let sessionsRoot: URL
     let indexURL: URL
     let source: CodexSessionSource
 
-    var rootPath: String { sessionsRoot.path }
+    let rootPath: String
+    var agentHomePath: String { agentHome.path }
 
     init(
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
-        source: CodexSessionSource = .active
+        source: CodexSessionSource = .active,
+        isDefaultAgentHome: Bool = true
     ) {
+        self.agentHome = codexHome.standardizedFileURL
+        self.isDefaultAgentHome = isDefaultAgentHome
         self.source = source
-        self.sessionsRoot = codexHome.appendingPathComponent(source.directoryName)
-        self.indexURL = codexHome.appendingPathComponent("session_index.jsonl")
+        self.sessionsRoot = self.agentHome.appendingPathComponent(source.directoryName)
+        self.indexURL = self.agentHome.appendingPathComponent("session_index.jsonl")
+        let canonicalRoot = try? self.sessionsRoot
+            .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
+        self.rootPath = canonicalRoot.flatMap { $0.isEmpty ? nil : $0 } ?? self.sessionsRoot.path
     }
 
     func enumerateFiles() -> [ScannedFile]? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            return []  // root missing: a legitimate empty result
+            // A configured additional home can be temporarily unmounted or
+            // inaccessible. Preserve its cached records until the user removes
+            // the configuration or the root can be enumerated reliably.
+            return isDefaultAgentHome ? [] : nil
         }
 
         // Any listing error mid-walk marks the whole result untrustworthy (nil),
@@ -224,6 +236,22 @@ struct CodexScanner: SessionScanner {
         var payload: Payload
     }
 
+    private struct AssistantMessageLine: Decodable {
+        var type: String?
+        struct Payload: Decodable {
+            struct ContentBlock: Decodable {
+                var type: String?
+                var text: String?
+            }
+
+            var type: String?
+            var role: String?
+            var phase: String?
+            var content: [ContentBlock]?
+        }
+        var payload: Payload
+    }
+
     private struct FileToolArguments: Decodable {
         var path: String?
         var file_path: String?
@@ -236,7 +264,8 @@ struct CodexScanner: SessionScanner {
     func parse(
         _ file: ScannedFile,
         includeLaterPrompts: Bool,
-        includeTouchedFiles: Bool
+        includeTouchedFiles: Bool,
+        includeAssistantReplies: Bool
     ) -> ParseOutcome {
         var cap = 512 * 1024
         var best: SessionRecord?
@@ -259,7 +288,8 @@ struct CodexScanner: SessionScanner {
                     to: record,
                     file: file,
                     includeLaterPrompts: includeLaterPrompts,
-                    includeTouchedFiles: includeTouchedFiles
+                    includeTouchedFiles: includeTouchedFiles,
+                    includeAssistantReplies: includeAssistantReplies
                 )
             }
             if Int64(cap) >= file.size || cap >= Self.maxHeadCap {
@@ -268,7 +298,8 @@ struct CodexScanner: SessionScanner {
                     to: best,
                     file: file,
                     includeLaterPrompts: includeLaterPrompts,
-                    includeTouchedFiles: includeTouchedFiles
+                    includeTouchedFiles: includeTouchedFiles,
+                    includeAssistantReplies: includeAssistantReplies
                 )
             }
             cap *= 2
@@ -308,9 +339,11 @@ struct CodexScanner: SessionScanner {
         let trimmedBranch = meta.git?.branch?.trimmingCharacters(in: .whitespacesAndNewlines)
         let gitBranch = trimmedBranch.flatMap { $0.isEmpty ? nil : $0 }
         return .record(SessionRecord(
-            id: SessionRecord.makeID(agent: .codex, sessionID: sessionID),
+            id: recordID(sessionID: sessionID),
             agent: .codex,
             sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome,
             fallbackTitle: nil,
             // A child rollout may begin with inherited parent history. Keep
             // that transcript text out of Spotion's durable cache and labels;
@@ -331,24 +364,40 @@ struct CodexScanner: SessionScanner {
         ))
     }
 
+    func recordID(sessionID: String) -> String {
+        SessionRecord.makeID(
+            agent: .codex,
+            sessionID: sessionID,
+            agentHomePath: agentHome.path,
+            isDefaultAgentHome: isDefaultAgentHome
+        )
+    }
+
     private func addingTransientMetadata(
         to record: SessionRecord,
         file: ScannedFile,
         includeLaterPrompts: Bool,
-        includeTouchedFiles: Bool
+        includeTouchedFiles: Bool,
+        includeAssistantReplies: Bool
     ) -> ParseOutcome {
         // A child's leading user_message may be inherited parent history and,
         // with firstPrompt nil, nothing would exclude it from later prompts.
         let includeLaterPrompts = includeLaterPrompts && record.codexProvenance != .subagent
-        guard includeLaterPrompts || includeTouchedFiles else { return .record(record) }
+        guard includeLaterPrompts || includeTouchedFiles || includeAssistantReplies else {
+            return .record(record)
+        }
         guard let lines = try? JSONLReader.tailLines(
             of: URL(fileURLWithPath: file.path),
-            cap: max(PromptSnippetPolicy.tailReadCap, TouchedFilePolicy.tailReadCap)
+            cap: max(
+                PromptSnippetPolicy.tailReadCap,
+                TouchedFilePolicy.tailReadCap,
+                AssistantReplySnippetPolicy.tailReadCap)
         ) else { return .ioFailure }
 
         let decoder = JSONDecoder()
         var prompts: [String] = []
         var toolPaths: [String] = []
+        var assistantReplies: [String] = []
         for data in lines {
             if includeLaterPrompts,
                let event = try? decoder.decode(EventLine.self, from: data),
@@ -359,6 +408,10 @@ struct CodexScanner: SessionScanner {
             }
             if includeTouchedFiles, let path = Self.structuredFilePath(from: data, decoder: decoder) {
                 toolPaths.append(path)
+            }
+            if includeAssistantReplies,
+               let reply = Self.visibleAssistantReply(from: data, decoder: decoder) {
+                assistantReplies.append(reply)
             }
         }
         var updated = record
@@ -376,7 +429,29 @@ struct CodexScanner: SessionScanner {
         if includeTouchedFiles {
             updated.touchedFileHydrationGeneration = TouchedFilePolicy.extractionGeneration
         }
+        if includeAssistantReplies {
+            updated.assistantReplySnippets = AssistantReplySnippetPolicy.mostRecent(assistantReplies)
+            updated.assistantReplyHydrationGeneration = AssistantReplySnippetPolicy.extractionGeneration
+        }
         return .record(updated)
+    }
+
+    /// Only final assistant message text is allowlisted. Reasoning summaries,
+    /// tool calls/results, events, user/context messages, and unknown blocks do
+    /// not satisfy this exact response-item shape.
+    private static func visibleAssistantReply(from data: Data, decoder: JSONDecoder) -> String? {
+        // The envelope type is part of the allowlist: a future non-response
+        // record whose payload merely resembles a message must not be indexed.
+        guard let line = try? decoder.decode(AssistantMessageLine.self, from: data),
+              line.type == "response_item",
+              line.payload.type == "message",
+              line.payload.role == "assistant",
+              line.payload.phase == nil || line.payload.phase == "final_answer",
+              let blocks = line.payload.content else { return nil }
+        let text = blocks.compactMap { block in
+            block.type == "output_text" ? block.text : nil
+        }.joined(separator: "\n")
+        return text.isEmpty ? nil : text
     }
 
     /// Codex records function-call arguments separately from tool output. Only
@@ -418,6 +493,11 @@ struct CodexScanner: SessionScanner {
         struct Entry: Decodable {
             var id: String?
             var thread_name: String?
+        }
+        if !isDefaultAgentHome,
+           (!FileManager.default.fileExists(atPath: agentHome.path)
+            || !FileManager.default.isReadableFile(atPath: agentHome.path)) {
+            return nil
         }
         guard FileManager.default.fileExists(atPath: indexURL.path) else { return [:] }
         guard let lines = try? JSONLReader.headLines(of: indexURL, cap: 8 * 1024 * 1024) else { return nil }

@@ -90,6 +90,12 @@ enum SpotionSettings {
         set { d.set(newValue, forKey: "searchLaterPrompts") }
     }
 
+    /// Privacy-sensitive visible assistant text. Missing preference means off.
+    static var searchAssistantReplies: Bool {
+        get { d.bool(forKey: "searchAssistantReplies") }
+        set { d.set(newValue, forKey: "searchAssistantReplies") }
+    }
+
     /// Missing or unknown values preserve the pre-feature behavior.
     static var spotlightHistoryWindow: SpotlightHistoryWindow {
         get {
@@ -114,6 +120,18 @@ enum SpotionSettings {
     static var includeCodexSubagentSessions: Bool {
         get { d.bool(forKey: "includeCodexSubagentSessions") }
         set { d.set(newValue, forKey: "includeCodexSubagentSessions") }
+    }
+
+    static func additionalAgentHomes(for agent: AgentKind) -> [String] {
+        let raw = d.stringArray(forKey: "additionalAgentHomes.\(agent.rawValue)") ?? []
+        return AgentHomePathPolicy.additionalPaths(raw, for: agent)
+    }
+
+    static func setAdditionalAgentHomes(_ paths: [String], for agent: AgentKind) {
+        d.set(
+            AgentHomePathPolicy.additionalPaths(paths, for: agent),
+            forKey: "additionalAgentHomes.\(agent.rawValue)"
+        )
     }
 
     private static func nonEmpty(_ s: String?) -> String? {

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum CodexSessionProvenance: String, Codable, Sendable, Hashable {
@@ -14,6 +15,11 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var agent: AgentKind
     /// Raw session id passed to `codex resume` / `claude --resume`
     var sessionID: String
+    /// Agent state directory that owns this transcript. Default-home sessions
+    /// retain their legacy identifiers; additional homes are namespaced by a
+    /// deterministic digest so matching UUIDs cannot collide in Spotlight.
+    var agentHomePath: String
+    var isDefaultAgentHome: Bool
     /// claude: title parsed from the tail title records; always nil for codex
     /// (codex titles live in session_index.jsonl)
     var fallbackTitle: String?
@@ -24,6 +30,12 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     /// transient runtime state: CodingKeys deliberately omit it so prompt text
     /// is donated to Spotlight without entering Spotion's persisted scan cache.
     var laterPromptSnippets: [String]
+    /// Opt-in, bounded visible assistant text. This is also transient runtime
+    /// state and is deliberately absent from CodingKeys.
+    var assistantReplySnippets: [String]
+    /// Proves that a transient assistant-reply hydration used the current
+    /// strict extraction rules, even when no eligible reply existed.
+    var assistantReplyHydrationGeneration: Int
     /// Opt-in, bounded project-relative paths extracted only from allowlisted
     /// structured file-tool inputs. Like later prompts these are transient and
     /// deliberately omitted from CodingKeys.
@@ -55,7 +67,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     var fileSize: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case id, agent, sessionID, fallbackTitle, firstPrompt, isArchived, codexProvenance, parentSessionID
+        case id, agent, sessionID, agentHomePath, isDefaultAgentHome
+        case fallbackTitle, firstPrompt, isArchived, codexProvenance, parentSessionID
         case cwd, projectName
         case gitBranch, startedAt, lastActivityAt, filePath, fileSize
     }
@@ -64,9 +77,13 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         id: String,
         agent: AgentKind,
         sessionID: String,
+        agentHomePath: String? = nil,
+        isDefaultAgentHome: Bool = true,
         fallbackTitle: String?,
         firstPrompt: String?,
         laterPromptSnippets: [String],
+        assistantReplySnippets: [String] = [],
+        assistantReplyHydrationGeneration: Int = 0,
         touchedFilePaths: [String] = [],
         touchedFileBasePath: String? = nil,
         touchedFileHydrationGeneration: Int = 0,
@@ -84,9 +101,13 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         self.id = id
         self.agent = agent
         self.sessionID = sessionID
+        self.agentHomePath = agentHomePath ?? AgentHomePathPolicy.defaultPath(for: agent)
+        self.isDefaultAgentHome = isDefaultAgentHome
         self.fallbackTitle = fallbackTitle
         self.firstPrompt = firstPrompt
         self.laterPromptSnippets = laterPromptSnippets
+        self.assistantReplySnippets = assistantReplySnippets
+        self.assistantReplyHydrationGeneration = assistantReplyHydrationGeneration
         self.touchedFilePaths = touchedFilePaths
         self.touchedFileBasePath = touchedFileBasePath
         self.touchedFileHydrationGeneration = touchedFileHydrationGeneration
@@ -107,9 +128,13 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         id = try values.decode(String.self, forKey: .id)
         agent = try values.decode(AgentKind.self, forKey: .agent)
         sessionID = try values.decode(String.self, forKey: .sessionID)
+        agentHomePath = try values.decode(String.self, forKey: .agentHomePath)
+        isDefaultAgentHome = try values.decode(Bool.self, forKey: .isDefaultAgentHome)
         fallbackTitle = try values.decodeIfPresent(String.self, forKey: .fallbackTitle)
         firstPrompt = try values.decodeIfPresent(String.self, forKey: .firstPrompt)
         laterPromptSnippets = []
+        assistantReplySnippets = []
+        assistantReplyHydrationGeneration = 0
         touchedFilePaths = []
         touchedFileBasePath = nil
         touchedFileHydrationGeneration = 0
@@ -133,6 +158,8 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(id, forKey: .id)
         try values.encode(agent, forKey: .agent)
         try values.encode(sessionID, forKey: .sessionID)
+        try values.encode(agentHomePath, forKey: .agentHomePath)
+        try values.encode(isDefaultAgentHome, forKey: .isDefaultAgentHome)
         try values.encodeIfPresent(fallbackTitle, forKey: .fallbackTitle)
         if codexProvenance != .subagent {
             try values.encodeIfPresent(firstPrompt, forKey: .firstPrompt)
@@ -149,8 +176,24 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         try values.encode(fileSize, forKey: .fileSize)
     }
 
-    static func makeID(agent: AgentKind, sessionID: String) -> String {
-        "\(agent.rawValue):\(sessionID)"
+    static func makeID(
+        agent: AgentKind,
+        sessionID: String,
+        agentHomePath: String? = nil,
+        isDefaultAgentHome: Bool = true
+    ) -> String {
+        let legacy = "\(agent.rawValue):\(sessionID)"
+        guard !isDefaultAgentHome else { return legacy }
+        let normalized = AgentHomePathPolicy.normalize(agentHomePath ?? "") ?? (agentHomePath ?? "")
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+            .prefix(12)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "\(legacy):home:\(digest)"
+    }
+
+    var sourceHomeDisplayPath: String? {
+        isDefaultAgentHome ? nil : AgentHomePathPolicy.displayPath(agentHomePath)
     }
 
     func spotlightKeywords(sourceTitle: String? = nil, includeTouchedFiles: Bool = false) -> [String] {
@@ -162,6 +205,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
             gitBranch: gitBranch,
             cwd: cwd,
             sourceTitle: sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             touchedFilePaths: touchedFilePaths,
             includeTouchedFiles: includeTouchedFiles
         )
@@ -175,6 +219,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         gitBranch: String?,
         cwd: String,
         sourceTitle: String? = nil,
+        sourceHomeDisplayPath: String? = nil,
         touchedFilePaths: [String] = [],
         includeTouchedFiles: Bool = false,
         isArchived: Bool = false
@@ -183,6 +228,7 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
         // replaces the visible title.
         var candidates = [projectName, agent.displayName, agent.rawValue, "session"]
         if let sourceTitle { candidates.append(sourceTitle) }
+        if let sourceHomeDisplayPath { candidates.append(sourceHomeDisplayPath) }
         if let gitBranch { candidates.append(gitBranch) }
         candidates += cwd.split(separator: "/").map(String.init)
         candidates += [sessionID, id]
@@ -200,16 +246,20 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
 
     func spotlightContentDescription(
         includeLaterPrompts: Bool,
+        includeAssistantReplies: Bool = false,
         sourceTitle: String? = nil,
         includeTouchedFiles: Bool = false
     ) -> String {
         Self.spotlightContentDescription(
             firstPrompt: firstPrompt,
             laterPrompts: laterPromptSnippets,
+            assistantReplies: assistantReplySnippets,
             cwd: cwd,
             includeLaterPrompts: includeLaterPrompts,
+            includeAssistantReplies: includeAssistantReplies,
             gitBranch: gitBranch,
             sourceTitle: sourceTitle,
+            sourceHomeDisplayPath: sourceHomeDisplayPath,
             isArchived: isArchived,
             isSubagent: codexProvenance == .subagent,
             touchedFilePaths: includeTouchedFiles ? touchedFilePaths : []
@@ -225,22 +275,27 @@ struct SessionRecord: Codable, Sendable, Identifiable, Hashable {
     static func spotlightContentDescription(
         firstPrompt: String?,
         laterPrompts: [String],
+        assistantReplies: [String] = [],
         cwd: String,
         includeLaterPrompts: Bool,
+        includeAssistantReplies: Bool = false,
         gitBranch: String? = nil,
         sourceTitle: String? = nil,
+        sourceHomeDisplayPath: String? = nil,
         isArchived: Bool = false,
         isSubagent: Bool = false,
         touchedFilePaths: [String] = []
     ) -> String {
         var parts = [firstPrompt]
         if includeLaterPrompts { parts.append(contentsOf: laterPrompts.map(Optional.some)) }
+        if includeAssistantReplies { parts.append(contentsOf: assistantReplies.map(Optional.some)) }
         parts.append(cwd)
         var metadata: [String] = []
         if isArchived { metadata.append("Archived") }
         if isSubagent { metadata.append("Subagent") }
         if let gitBranch, !gitBranch.isEmpty { metadata.append(gitBranch) }
         if let sourceTitle, !sourceTitle.isEmpty { metadata.append(sourceTitle) }
+        if let sourceHomeDisplayPath, !sourceHomeDisplayPath.isEmpty { metadata.append(sourceHomeDisplayPath) }
         if !metadata.isEmpty { parts.append(metadata.joined(separator: " · ")) }
         if !touchedFilePaths.isEmpty { parts.append(touchedFilePaths.joined(separator: " ")) }
         return parts.compactMap { $0 }.joined(separator: "\n")
@@ -369,6 +424,39 @@ enum PromptSnippetPolicy {
         let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard !collapsed.isEmpty else { return nil }
         return String(collapsed.prefix(maximumSnippetLength))
+    }
+}
+
+enum AssistantReplySnippetPolicy {
+    /// Bump when the allowlisted Codex/Claude text schemas or sanitization
+    /// rules change. The store rehydrates unchanged transcripts exactly once.
+    static let extractionGeneration = 1
+    static let tailReadCap = 512 * 1024
+    static let maximumCount = 5
+    static let maximumSnippetLength = 300
+    static let maximumAggregateLength = 1_500
+
+    /// Inputs are chronological; output is newest-first. Only the scanner may
+    /// decide whether input is visible assistant text.
+    static func mostRecent(_ replies: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        var donatedLength = 0
+
+        for reply in replies.reversed() {
+            let collapsed = reply.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard !collapsed.isEmpty else { continue }
+            let snippet = String(collapsed.prefix(maximumSnippetLength))
+            guard result.count < maximumCount, seen.insert(snippet).inserted else { continue }
+            let separatorLength = result.isEmpty ? 0 : 1
+            let remaining = maximumAggregateLength - donatedLength - separatorLength
+            guard remaining > 0 else { break }
+            let bounded = String(snippet.prefix(remaining))
+            guard !bounded.isEmpty else { break }
+            result.append(bounded)
+            donatedLength += separatorLength + bounded.count
+        }
+        return result
     }
 }
 

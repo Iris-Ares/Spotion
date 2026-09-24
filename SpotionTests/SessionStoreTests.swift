@@ -454,6 +454,119 @@ import Testing
         })
     }
 
+    @Test func assistantReplyToggleHydratesTransientTextRetriesAndStabilizes() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("codex first"),
+                try CodexScannerTests.assistantMessage(["codex distinctive answer"]),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+        try TestSupport.write(
+            [
+                ClaudeScannerTests.user("claude first"),
+                try ClaudeScannerTests.assistantBlocks([
+                    ["type": "text", "text": "claude distinctive answer"],
+                ]),
+            ].joined(separator: "\n") + "\n",
+            to: env.claudeHome.appendingPathComponent("projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl"))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: both, includeAssistantReplies: false)
+        #expect(initial.upserts.count == 2)
+        #expect(initial.upserts.allSatisfy { $0.assistantReplySnippets.isEmpty })
+        await store.markIndexed(initial)
+        #expect(await store.refresh(enabledAgents: both, includeAssistantReplies: false).isEmpty)
+
+        let enabled = await store.refresh(enabledAgents: both, includeAssistantReplies: true)
+        #expect(enabled.upserts.count == 2)
+        #expect(enabled.upserts.contains { $0.assistantReplySnippets == ["codex distinctive answer"] })
+        #expect(enabled.upserts.contains { $0.assistantReplySnippets == ["claude distinctive answer"] })
+        #expect(enabled.upserts.allSatisfy {
+            $0.spotlightContentDescription(
+                includeLaterPrompts: false,
+                includeAssistantReplies: true
+            ).contains("distinctive answer")
+        })
+
+        // A failed donation keeps the dirty ids and transient text available
+        // for retry without ever persisting the snippets.
+        let retried = await store.refresh(enabledAgents: both, includeAssistantReplies: true)
+        #expect(retried.upserts.count == 2)
+        #expect(retried.upserts.allSatisfy { !$0.assistantReplySnippets.isEmpty })
+        await store.markIndexed(retried)
+        #expect(await store.refresh(enabledAgents: both, includeAssistantReplies: true).isEmpty)
+
+        let persistedCache = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        #expect(!persistedCache.contains("distinctive answer"))
+
+        // Disabling after relaunch must overwrite Spotlight even though the
+        // transient replies are already absent from the decoded cache.
+        let disablingRelaunch = makeStore(env)
+        await disablingRelaunch.bootstrap()
+        let disabled = await disablingRelaunch.refresh(
+            enabledAgents: both,
+            includeAssistantReplies: false)
+        #expect(disabled.upserts.count == 2)
+        #expect(disabled.upserts.allSatisfy { $0.assistantReplySnippets.isEmpty })
+        #expect(disabled.upserts.allSatisfy {
+            !$0.spotlightContentDescription(
+                includeLaterPrompts: false,
+                includeAssistantReplies: false
+            ).contains("distinctive answer")
+        })
+        await disablingRelaunch.markIndexed(disabled)
+        #expect(await disablingRelaunch.refresh(
+            enabledAgents: both,
+            includeAssistantReplies: false).isEmpty)
+
+        // A later full rebuild rehydrates both unchanged transcripts before
+        // their new Spotlight donations are emitted.
+        let rebuildingRelaunch = makeStore(env)
+        await rebuildingRelaunch.bootstrap()
+        await rebuildingRelaunch.forgetIndexed()
+        let rebuilt = await rebuildingRelaunch.refresh(
+            enabledAgents: both,
+            includeAssistantReplies: true)
+        #expect(rebuilt.upserts.count == 2)
+        #expect(rebuilt.upserts.allSatisfy { !$0.assistantReplySnippets.isEmpty })
+    }
+
+    @Test func assistantReplyGenerationChangeReparsesUnchangedSessionsOnce() async throws {
+        let env = try makeEnv()
+        try TestSupport.write(
+            [
+                CodexScannerTests.meta(),
+                CodexScannerTests.userMessage("first"),
+                try CodexScannerTests.assistantMessage(["generation answer"]),
+            ].joined(separator: "\n") + "\n",
+            to: env.codexHome.appendingPathComponent(CodexScannerTests.sessionRel))
+
+        let store = makeStore(env)
+        await store.bootstrap()
+        let initial = await store.refresh(enabledAgents: [.codex], includeAssistantReplies: true)
+        await store.markIndexed(initial)
+
+        let cached = try String(contentsOf: env.cacheURL, encoding: .utf8)
+        let olderGeneration = cached.replacingOccurrences(
+            of: "\"assistantReplyExtractionGeneration\":\(AssistantReplySnippetPolicy.extractionGeneration)",
+            with: "\"assistantReplyExtractionGeneration\":0")
+        #expect(olderGeneration != cached)
+        try olderGeneration.write(to: env.cacheURL, atomically: true, encoding: .utf8)
+
+        let relaunched = makeStore(env)
+        await relaunched.bootstrap()
+        let migrated = await relaunched.refresh(enabledAgents: [.codex], includeAssistantReplies: true)
+        #expect(migrated.upserts.count == 1)
+        #expect(migrated.upserts.first?.assistantReplySnippets == ["generation answer"])
+        await relaunched.markIndexed(migrated)
+        #expect(await relaunched.refresh(
+            enabledAgents: [.codex],
+            includeAssistantReplies: true).isEmpty)
+    }
+
     @Test func preGitBranchCacheReparsesAndUpsertsOnce() async throws {
         let env = try makeEnv()
         let sessionURL = try TestSupport.write(
@@ -2289,5 +2402,89 @@ import Testing
         #expect(!archived.spotlightContentDescription(includeLaterPrompts: false).contains("Sources/App.swift"))
         #expect(archived.spotlightContentDescription(includeLaterPrompts: false, includeTouchedFiles: true)
             .contains("Sources/App.swift"))
+    }
+
+    @Test func additionalHomesKeepDuplicateUUIDsDistinctAndUseTheirOwnTitles() async throws {
+        let env = try makeEnv()
+        let alternate = env.codexHome.deletingLastPathComponent().appendingPathComponent("codex-work")
+        try writeCodexSession(env, title: "Default title")
+        try TestSupport.write(
+            [CodexScannerTests.meta(), CodexScannerTests.userMessage("alternate prompt")]
+                .joined(separator: "\n") + "\n",
+            to: alternate.appendingPathComponent(CodexScannerTests.sessionRel)
+        )
+        try TestSupport.write(
+            "{\"id\":\"\(CodexScannerTests.uuid)\",\"thread_name\":\"Alternate title\"}\n",
+            to: alternate.appendingPathComponent("session_index.jsonl")
+        )
+
+        let store = SessionStore(cacheURL: env.cacheURL, scanners: [
+            CodexScanner(codexHome: env.codexHome),
+            CodexScanner(codexHome: alternate, isDefaultAgentHome: false),
+        ])
+        await store.bootstrap()
+        let diff = await store.refresh(enabledAgents: [.codex])
+
+        #expect(diff.upserts.count == 2)
+        #expect(Set(diff.upserts.map(\.id)).count == 2)
+        let defaultRecord = try #require(diff.upserts.first { $0.isDefaultAgentHome })
+        let alternateRecord = try #require(diff.upserts.first { !$0.isDefaultAgentHome })
+        #expect(defaultRecord.id == "codex:\(CodexScannerTests.uuid)")
+        #expect(alternateRecord.id.hasPrefix("codex:\(CodexScannerTests.uuid):home:"))
+        #expect(alternateRecord.agentHomePath == alternate.standardizedFileURL.path)
+        #expect(await store.displayTitle(for: defaultRecord) == "Default title")
+        #expect(await store.displayTitle(for: alternateRecord) == "Alternate title")
+    }
+
+    @Test func missingConfiguredHomePreservesCacheUntilConfigurationIsRemoved() async throws {
+        let env = try makeEnv()
+        let alternate = env.codexHome.deletingLastPathComponent().appendingPathComponent("codex-work")
+        try TestSupport.write(
+            [CodexScannerTests.meta(), CodexScannerTests.userMessage("alternate prompt")]
+                .joined(separator: "\n") + "\n",
+            to: alternate.appendingPathComponent(CodexScannerTests.sessionRel)
+        )
+        let additionalScanner = CodexScanner(codexHome: alternate, isDefaultAgentHome: false)
+        let store = SessionStore(cacheURL: env.cacheURL, scanners: [additionalScanner])
+        await store.bootstrap()
+        let indexed = await store.refresh(enabledAgents: [.codex])
+        let id = try #require(indexed.upserts.first?.id)
+        await store.markIndexed(indexed)
+
+        let unavailable = alternate.deletingLastPathComponent().appendingPathComponent("temporarily-unmounted")
+        try FileManager.default.moveItem(at: alternate, to: unavailable)
+        let missing = await store.refresh(enabledAgents: [.codex])
+        #expect(missing.isEmpty)
+        #expect(await store.record(id: id) != nil)
+
+        await store.configureScanners([])
+        let removed = await store.refresh(enabledAgents: [.codex])
+        #expect(removed.deletedIDs == [id])
+        #expect(await store.record(id: id) == nil)
+    }
+
+    @Test func additionalClaudeHomeKeepsMatchingUUIDSeparateFromDefault() async throws {
+        let env = try makeEnv()
+        let alternate = env.claudeHome.deletingLastPathComponent().appendingPathComponent("claude-work")
+        try writeClaudeSession(env)
+        try TestSupport.write(
+            ClaudeScannerTests.user("alternate Claude prompt") + "\n",
+            to: alternate.appendingPathComponent(
+                "projects/-tmp-proj/\(ClaudeScannerTests.uuid).jsonl")
+        )
+
+        let store = SessionStore(cacheURL: env.cacheURL, scanners: [
+            ClaudeScanner(claudeHome: env.claudeHome),
+            ClaudeScanner(claudeHome: alternate, isDefaultAgentHome: false),
+        ])
+        await store.bootstrap()
+        let diff = await store.refresh(enabledAgents: [.claude])
+
+        #expect(diff.upserts.count == 2)
+        #expect(Set(diff.upserts.map(\.id)).count == 2)
+        #expect(diff.upserts.contains { $0.id == "claude:\(ClaudeScannerTests.uuid)" })
+        let additional = try #require(diff.upserts.first { !$0.isDefaultAgentHome })
+        #expect(additional.id.hasPrefix("claude:\(ClaudeScannerTests.uuid):home:"))
+        #expect(additional.agentHomePath == alternate.standardizedFileURL.path)
     }
 }

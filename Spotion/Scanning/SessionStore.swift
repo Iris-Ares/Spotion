@@ -58,9 +58,7 @@ enum PinUpdateResult: Sendable, Equatable {
 /// title resolution, and diffing against the set of already-donated ids.
 actor SessionStore {
     private let cacheURL: URL
-    private let codexScanner: CodexScanner?
-    private let archivedCodexScanner: CodexScanner?
-    private let claudeScanner: ClaudeScanner?
+    private var scanners: [any SessionScanner]
     private var hiddenSessions: HiddenSessionStore
     private var hiddenStateRuntimeError: String?
     private var projectExclusions: ProjectExclusionStore
@@ -92,9 +90,10 @@ actor SessionStore {
         cacheURL: URL,
         hiddenSessionsURL: URL? = nil,
         projectExclusionsURL: URL? = nil,
-        codexScanner: CodexScanner?,
+        codexScanner: CodexScanner? = nil,
         archivedCodexScanner: CodexScanner? = nil,
-        claudeScanner: ClaudeScanner?,
+        claudeScanner: ClaudeScanner? = nil,
+        scanners: [any SessionScanner]? = nil,
         historyWindow: SpotlightHistoryWindow = .all,
         now: Date = Date(),
         pinnedSessionsURL: URL? = nil,
@@ -102,9 +101,11 @@ actor SessionStore {
         includeCodexSubagents: Bool = false
     ) {
         self.cacheURL = cacheURL
-        self.codexScanner = codexScanner
-        self.archivedCodexScanner = archivedCodexScanner
-        self.claudeScanner = claudeScanner
+        self.scanners = scanners ?? [
+            codexScanner as (any SessionScanner)?,
+            archivedCodexScanner as (any SessionScanner)?,
+            claudeScanner as (any SessionScanner)?,
+        ].compactMap { $0 }
         hiddenSessions = HiddenSessionStore(
             url: hiddenSessionsURL
                 ?? cacheURL.deletingLastPathComponent().appendingPathComponent("hidden-sessions-v1.json"))
@@ -122,6 +123,10 @@ actor SessionStore {
         // Entity queries may run before the first refresh; honor the saved
         // opt-in immediately instead of hiding cached children until then.
         self.includeCodexSubagents = includeCodexSubagents
+    }
+
+    func configureScanners(_ scanners: [any SessionScanner]) {
+        self.scanners = scanners
     }
 
     // MARK: - Lifecycle
@@ -201,7 +206,8 @@ actor SessionStore {
         now: Date = Date(),
         includeTouchedFiles: Bool = false,
         includeArchivedCodex: Bool = false,
-        includeCodexSubagents: Bool = false
+        includeCodexSubagents: Bool = false,
+        includeAssistantReplies: Bool = false
     ) async -> SessionDiff {
         self.historyWindow = historyWindow
         historyReferenceDate = now
@@ -209,6 +215,7 @@ actor SessionStore {
         var changedIDs = Set<String>()
         var seenPaths = Set<String>()
         var hydratedPromptPaths = Set<String>()
+        var hydratedAssistantReplyPaths = Set<String>()
 
         if cache.searchLaterPromptsEnabled != includeLaterPrompts {
             cache.searchLaterPromptsEnabled = includeLaterPrompts
@@ -226,6 +233,27 @@ actor SessionStore {
                 for path in Array(cache.entries.keys) {
                     guard var record = cache.entries[path]?.record else { continue }
                     record.laterPromptSnippets = []
+                    cache.entries[path]?.record = record
+                    changedIDs.insert(record.id)
+                }
+            }
+        }
+
+        let assistantReplyGeneration = includeAssistantReplies
+            ? AssistantReplySnippetPolicy.extractionGeneration
+            : 0
+        if cache.assistantReplyExtractionGeneration != assistantReplyGeneration {
+            cache.assistantReplyExtractionGeneration = assistantReplyGeneration
+            if includeAssistantReplies {
+                cache.assistantReplyPendingPaths = Set(cache.entries.keys)
+            } else {
+                // Transient reply text is already absent after relaunch, but
+                // every indexed record must overwrite its prior donation.
+                cache.assistantReplyPendingPaths = []
+                for path in Array(cache.entries.keys) {
+                    guard var record = cache.entries[path]?.record else { continue }
+                    record.assistantReplySnippets = []
+                    record.assistantReplyHydrationGeneration = 0
                     cache.entries[path]?.record = record
                     changedIDs.insert(record.id)
                 }
@@ -255,20 +283,26 @@ actor SessionStore {
         // Resolve metadata-only re-donation triggers before file enumeration,
         // so opt-in prompt snippets (which are deliberately not persisted in
         // the scan cache) can be rehydrated in the same refresh.
-        if enabledAgents.contains(.codex), let codexScanner,
-           let newTitles = codexScanner.loadTitleIndex() {
-            var affected = Set<String>()
-            for (sessionID, name) in newTitles where cache.codexTitles[sessionID] != name {
-                affected.insert(sessionID)
+        if enabledAgents.contains(.codex) {
+            for codexScanner in scanners.compactMap({ $0 as? CodexScanner })
+            where !codexScanner.source.isArchived {
+                guard let newTitles = codexScanner.loadTitleIndex() else { continue }
+                let homeRecords = records.values.filter {
+                    $0.agent == .codex && $0.agentHomePath == codexScanner.agentHome.path
+                }
+                for record in homeRecords where newTitles[record.sessionID] == nil {
+                    if cache.codexTitles.removeValue(forKey: record.id) != nil {
+                        changedIDs.insert(record.id)
+                    }
+                }
+                for (sessionID, name) in newTitles {
+                    let id = codexScanner.recordID(sessionID: sessionID)
+                    if cache.codexTitles[id] != name, records[id] != nil {
+                        changedIDs.insert(id)
+                    }
+                    cache.codexTitles[id] = name
+                }
             }
-            for sessionID in cache.codexTitles.keys where newTitles[sessionID] == nil {
-                affected.insert(sessionID)
-            }
-            for sessionID in affected {
-                let id = SessionRecord.makeID(agent: .codex, sessionID: sessionID)
-                if records[id] != nil { changedIDs.insert(id) }
-            }
-            cache.codexTitles = newTitles
         }
 
         for (agent, fingerprint) in iconSources
@@ -301,6 +335,19 @@ actor SessionStore {
                 }
             }
         }
+        if includeAssistantReplies {
+            let needsHydration = cache.dirtyIDs
+                .union(changedIDs)
+                .union(Set(records.keys).subtracting(cache.indexedIDs))
+            for (path, entry) in cache.entries {
+                if let record = entry.record,
+                   needsHydration.contains(record.id),
+                   record.assistantReplyHydrationGeneration
+                    != AssistantReplySnippetPolicy.extractionGeneration {
+                    cache.assistantReplyPendingPaths.insert(path)
+                }
+            }
+        }
 
         struct RootState {
             var agent: AgentKind
@@ -311,23 +358,22 @@ actor SessionStore {
         var roots: [RootState] = []
         var toParse: [(scanner: any SessionScanner, file: ScannedFile)] = []
 
-        let scanners: [(scanner: any SessionScanner, enabled: Bool)] = [
-            codexScanner.map { ($0 as any SessionScanner, enabledAgents.contains(.codex)) },
-            archivedCodexScanner.map {
-                ($0 as any SessionScanner, enabledAgents.contains(.codex) && includeArchivedCodex)
-            },
-            claudeScanner.map { ($0 as any SessionScanner, enabledAgents.contains(.claude)) },
-        ].compactMap { $0 }
+        let descriptors: [(scanner: any SessionScanner, enabled: Bool)] = scanners.map { scanner in
+            let archiveAllowed = (scanner as? CodexScanner)?.source.isArchived != true
+                || includeArchivedCodex
+            return (scanner, enabledAgents.contains(scanner.agent) && archiveAllowed)
+        }
 
-        for descriptor in scanners {
+        for descriptor in descriptors {
             let scanner = descriptor.scanner
             // canonicalPath (realpath semantics): FileManager enumeration returns
             // symlink-resolved canonical paths (e.g. /var → /private/var), so the
             // root must be canonicalized the same way for prefix matching to hold.
             // Do NOT use resolvingSymlinksInPath() — it strips the /private prefix
             // in the opposite direction.
-            let rootPath = (try? URL(fileURLWithPath: scanner.rootPath)
-                .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath) ?? scanner.rootPath
+            let resolvedRoot = try? URL(fileURLWithPath: scanner.rootPath)
+                .resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
+            let rootPath = resolvedRoot.flatMap { $0.isEmpty ? nil : $0 } ?? scanner.rootPath
             guard descriptor.enabled else {
                 roots.append(RootState(agent: scanner.agent, path: rootPath, trustworthy: true, enabled: false))
                 continue
@@ -345,7 +391,8 @@ actor SessionStore {
                 if let entry = cache.entries[file.path],
                    entry.mtime == file.mtime, entry.size == file.size,
                    !cache.laterPromptPendingPaths.contains(file.path),
-                   !cache.touchedFilePendingPaths.contains(file.path) {
+                   !cache.touchedFilePendingPaths.contains(file.path),
+                   !cache.assistantReplyPendingPaths.contains(file.path) {
                     continue
                 }
                 toParse.append((scanner, file))
@@ -359,7 +406,8 @@ actor SessionStore {
                     (file, scanner.agent, scanner.parse(
                         file,
                         includeLaterPrompts: includeLaterPrompts,
-                        includeTouchedFiles: includeTouchedFiles
+                        includeTouchedFiles: includeTouchedFiles,
+                        includeAssistantReplies: includeAssistantReplies
                     ))
                 }
             }
@@ -378,6 +426,8 @@ actor SessionStore {
             cache.laterPromptPendingPaths.remove(file.path)
             if includeLaterPrompts { hydratedPromptPaths.insert(file.path) }
             cache.touchedFilePendingPaths.remove(file.path)
+            cache.assistantReplyPendingPaths.remove(file.path)
+            if includeAssistantReplies { hydratedAssistantReplyPaths.insert(file.path) }
             var record = outcome.record
             // Claude desktop's claude://resume import rewrites the transcript
             // in place with the tail title records stripped. Same path + same
@@ -406,7 +456,10 @@ actor SessionStore {
         // The prefix carries a "/" boundary so …/sessions cannot accidentally
         // match a sibling like …/sessionsXYZ.
         for path in cache.entries.keys where !seenPaths.contains(path) {
-            if let root = roots.first(where: { path.hasPrefix($0.path + "/") }),
+            let root = roots
+                .filter { path.hasPrefix($0.path + "/") }
+                .max { $0.path.count < $1.path.count }
+            if let root,
                root.enabled, !root.trustworthy {
                 continue  // suspected transient failure — keep the entry
             }
@@ -419,19 +472,25 @@ actor SessionStore {
             }
             cache.laterPromptPendingPaths.remove(path)
             cache.touchedFilePendingPaths.remove(path)
+            cache.assistantReplyPendingPaths.remove(path)
         }
 
         // Rebuild uniformly from entries (handles winner selection among
         // multiple files sharing a session_id, and deletion fallback).
         rebuildRecords()
+        cache.codexTitles = cache.codexTitles.filter { records[$0.key] != nil }
 
         let currentIDs = Set(records.keys)
         // One definition of "this agent's record set is complete this cycle":
         // enabled, root enumerated, every transcript parsed. Only then may
         // Spotion-only sidecar state (hidden, pins, aliases) be pruned for it;
         // disabled agents and transient failures keep their state.
-        let verifiedAgents = Set(roots.filter { $0.enabled && $0.trustworthy }.map(\.agent))
-            .subtracting(incompleteAgents)
+        let verifiedAgents = Set(AgentKind.allCases.filter { agent in
+            let enabledRoots = roots.filter { $0.agent == agent && $0.enabled }
+            return !enabledRoots.isEmpty
+                && enabledRoots.allSatisfy(\.trustworthy)
+                && !incompleteAgents.contains(agent)
+        })
         if hiddenSessions.isAvailable {
             // A transcript path that was enumerated but could not currently be
             // parsed is not evidence that the source disappeared. Preserve its
@@ -485,6 +544,13 @@ actor SessionStore {
                 cache.touchedFilePendingPaths.insert(record.filePath)
             }
         }
+        if includeAssistantReplies {
+            for id in changedIDs {
+                guard let record = records[id],
+                      !hydratedAssistantReplyPaths.contains(record.filePath) else { continue }
+                cache.assistantReplyPendingPaths.insert(record.filePath)
+            }
+        }
 
         // If an enabled root could not be enumerated, its cached activity time
         // may be stale. Keep already-indexed items in Spotlight until a
@@ -516,7 +582,13 @@ actor SessionStore {
             guard let path = records[$0]?.filePath else { return false }
             return cache.touchedFilePendingPaths.contains(path)
         }) : []
-        let hydrationBlockedIDs = promptHydrationBlockedIDs.union(touchedFileHydrationBlockedIDs)
+        let assistantReplyHydrationBlockedIDs = includeAssistantReplies ? Set(upsertIDs.filter {
+            guard let path = records[$0]?.filePath else { return false }
+            return cache.assistantReplyPendingPaths.contains(path)
+        }) : []
+        let hydrationBlockedIDs = promptHydrationBlockedIDs
+            .union(touchedFileHydrationBlockedIDs)
+            .union(assistantReplyHydrationBlockedIDs)
         let diff = SessionDiff(
             upserts: upsertIDs.subtracting(hydrationBlockedIDs).compactMap { records[$0] },
             deletedIDs: Array(cache.indexedIDs.subtracting(visibleIDs))
@@ -701,7 +773,7 @@ actor SessionStore {
     /// claude: tail title records > first prompt > project name.
     func sourceTitle(for record: SessionRecord) -> String {
         let raw: String? = switch record.agent {
-        case .codex: cache.codexTitles[record.sessionID] ?? record.firstPrompt
+        case .codex: cache.codexTitles[record.id] ?? record.firstPrompt
         case .claude: record.fallbackTitle ?? record.firstPrompt
         }
         let sanitized = raw?.titleSanitized ?? ""
